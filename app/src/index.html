@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WAN Monitor</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="vendor/chart.umd.min.js"></script>
+    <script src="vendor/chartjs-plugin-annotation.min.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>WAN якість: ZTE vs Soyea</h1>
+      <div class="controls">
+        <span id="status">—</span>
+        <button id="refresh">Оновити</button>
+        <button id="measure">Виміряти зараз</button>
+      </div>
+    </header>
+    <div class="charts">
+      <div class="box"><canvas id="rtt"></canvas></div>
+      <div class="box"><canvas id="loss"></canvas></div>
+    </div>
+    <div class="legend">
+      <span class="leg"><span class="sq" style="background:rgba(239,68,68,0.4)"></span> ZTE вимкнено</span>
+      <span class="leg"><span class="sq" style="background:rgba(251,146,60,0.4)"></span> Soyea вимкнено</span>
+    </div>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
