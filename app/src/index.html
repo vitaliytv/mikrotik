@@ -12,6 +12,24 @@
     <header>
       <h1>WAN якість: ZTE vs Soyea</h1>
       <div class="controls">
+        <label for="period">Період:</label>
+        <select id="period">
+          <option value="1">1 год</option>
+          <option value="3" selected>3 год</option>
+          <option value="6">6 год</option>
+          <option value="12">12 год</option>
+          <option value="24">24 год</option>
+          <option value="72">3 дні</option>
+          <option value="168">7 днів</option>
+          <option value="all">Весь час</option>
+          <option value="custom">Свій період…</option>
+        </select>
+        <span id="custom-range" class="custom-range" hidden>
+          <input type="datetime-local" id="range-from" />
+          —
+          <input type="datetime-local" id="range-to" />
+          <button id="apply-range">Застосувати</button>
+        </span>
         <span id="status">—</span>
         <button id="refresh">Оновити</button>
         <button id="measure">Виміряти зараз</button>
@@ -25,6 +43,27 @@
       <span class="leg"><span class="sq" style="background:rgba(239,68,68,0.4)"></span> ZTE вимкнено</span>
       <span class="leg"><span class="sq" style="background:rgba(251,146,60,0.4)"></span> Soyea вимкнено</span>
     </div>
+
+    <header style="margin-top:28px">
+      <h1>Лог роутера (netwatch flap-події)</h1>
+      <div class="controls">
+        <span id="router-status">—</span>
+        <button id="refresh-router">Оновити лог</button>
+      </div>
+    </header>
+    <div class="charts">
+      <div class="box"><canvas id="flaps"></canvas></div>
+      <div class="box">
+        <div class="netwatch-cards" id="netwatch-cards"></div>
+        <table class="events" id="events-table">
+          <thead>
+            <tr><th>Час</th><th>Канал</th><th>Подія</th></tr>
+          </thead>
+          <tbody id="events-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <script type="module" src="main.js"></script>
   </body>
 </html>

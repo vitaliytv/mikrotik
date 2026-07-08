@@ -1,0 +1,38 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#12202e"/>
+      <stop offset="1" stop-color="#0a1420"/>
+    </linearGradient>
+    <linearGradient id="graphLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#4ade80"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="200" fill="url(#bg)"/>
+
+  <!-- Mk letters -->
+  <text x="86" y="470"
+        font-family="Helvetica, Arial, sans-serif"
+        font-weight="800"
+        font-size="420"
+        fill="#f5f7fa">Mk</text>
+
+  <!-- baseline under the letters -->
+  <line x1="86" y1="540" x2="938" y2="540" stroke="#2b3b4c" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- quality graph (sparkline) -->
+  <polyline
+    points="86,760 200,700 314,820 428,660 542,760 656,600 770,700 884,560 938,600"
+    fill="none"
+    stroke="url(#graphLine)"
+    stroke-width="34"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+
+  <!-- dots marking sample points -->
+  <circle cx="86" cy="760" r="22" fill="#22d3ee"/>
+  <circle cx="428" cy="660" r="22" fill="#67d3c0"/>
+  <circle cx="884" cy="560" r="22" fill="#4ade80"/>
+</svg>

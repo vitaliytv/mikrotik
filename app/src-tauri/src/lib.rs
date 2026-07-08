@@ -26,6 +26,19 @@ fn run_wan_monitor() -> Result<String, String> {
     Ok(text)
 }
 
+#[tauri::command]
+fn read_router_log() -> Result<String, String> {
+    let output = Command::new("/usr/bin/python3")
+        .arg(home_path("wan_router_log.py"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.stdout.is_empty() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -33,7 +46,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_wan_csv,
             read_wan_state,
-            run_wan_monitor
+            run_wan_monitor,
+            read_router_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

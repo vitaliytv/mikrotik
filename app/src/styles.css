@@ -52,6 +52,23 @@ button:active {
   background-color: #2a2a3e;
 }
 
+select,
+input[type="datetime-local"] {
+  border-radius: 8px;
+  border: 1px solid #333;
+  padding: 0.4em 0.7em;
+  font-size: 0.9em;
+  font-family: inherit;
+  color: #eee;
+  background-color: #1e1e2e;
+}
+
+.custom-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .charts {
   display: grid;
   gap: 20px;
@@ -85,4 +102,68 @@ canvas {
   width: 14px;
   height: 14px;
   border-radius: 2px;
+}
+
+.netwatch-cards {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.nw-card {
+  flex: 1;
+  min-width: 160px;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #16162a;
+  border-left: 4px solid #666;
+}
+
+.nw-card.up {
+  border-left-color: #34d399;
+}
+
+.nw-card.down {
+  border-left-color: #f87171;
+}
+
+.nw-card .title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #ddd;
+}
+
+.nw-card .detail {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+
+table.events {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  max-height: 220px;
+  display: block;
+  overflow-y: auto;
+}
+
+table.events thead {
+  color: #7dd3fc;
+  text-align: left;
+}
+
+table.events td,
+table.events th {
+  padding: 4px 8px;
+  border-bottom: 1px solid #2a2a3e;
+}
+
+table.events tr.down td {
+  color: #f87171;
+}
+
+table.events tr.up td {
+  color: #34d399;
 }
