@@ -148,7 +148,7 @@ dn1='/ip route disable [find comment~"^LB-w1"]'
 up2='/ip route enable [find comment~"^LB-w2"]'
 dn2='/ip route disable [find comment~"^LB-w2"]'
 nw_ok=True
-nwbase=["=type=icmp","=interval=10s","=timeout=2s","=packet-count=5","=thr-loss-percent=30"]
+nwbase=["=type=icmp","=interval=25s","=timeout=2s","=packet-count=12","=thr-loss-percent=55"]
 if gw1:
     t=talk(a,["/tool/netwatch/add","=host="+PROBE1,"=comment=LBnw1","=up-script="+up1,"=down-script="+dn1]+nwbase)
     if t: print("  netwatch WAN1 TRAP:",t); nw_ok=False
