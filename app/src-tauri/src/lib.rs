@@ -27,6 +27,19 @@ fn run_wan_monitor() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_wan_speed() -> Result<String, String> {
+    let output = Command::new("/usr/bin/python3")
+        .arg(home_path("wan_speed.py"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.stdout.is_empty() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+#[tauri::command]
 fn read_router_log() -> Result<String, String> {
     let output = Command::new("/usr/bin/python3")
         .arg(home_path("wan_router_log.py"))
@@ -47,6 +60,7 @@ pub fn run() {
             read_wan_csv,
             read_wan_state,
             run_wan_monitor,
+            read_wan_speed,
             read_router_log
         ])
         .run(tauri::generate_context!())
