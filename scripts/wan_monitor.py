@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-WAN Monitor + якісний авто-failover для MikroTik dual-WAN.
+WAN Monitor для MikroTik dual-WAN.
 Cron: */3 * * * * /usr/bin/python3 /Users/vitalii/wan_monitor.py
-CSV: ~/wan_log.csv   Стан: ~/wan_state.json
+CSV: ~/wan_log.csv
 """
-import socket, hashlib, time, csv, os, re, json
+import socket, hashlib, time, csv, os, re
 from datetime import datetime
 
 def _load_env_file(path="~/.mikrotik.env"):
@@ -28,20 +28,11 @@ PW   = os.environ.get("MIKROTIK_PASS") or _ENV_FILE.get("MIKROTIK_PASS")
 if not PW:
     raise SystemExit("MIKROTIK_PASS не задано. Створи ~/.mikrotik.env з MIKROTIK_PASS=... або встанови env-змінну.")
 CSV_PATH   = os.path.expanduser("~/wan_log.csv")
-STATE_PATH = os.path.expanduser("~/wan_state.json")
 CSV_HEADER = ["timestamp","zte_avg_ms","zte_max_ms","zte_loss_pct",
               "soyea_avg_ms","soyea_max_ms","soyea_loss_pct","zte_active","soyea_active"]
 
 PROBE_ZTE   = "4.2.2.1"    # Level3 DNS — тест через LMT
 PROBE_SOYEA = "4.2.2.2"    # Level3 DNS — тест через BITE
-
-RTT_AVG_BAD  = 150.0  # мс — середня вище = погано
-RTT_MAX_BAD  = 160.0  # мс — spike вище = погано (важливо для дзвінків)
-RTT_AVG_GOOD = 100.0  # мс — середня нижче = відновився
-RTT_MAX_GOOD = 110.0  # мс — spike нижче = відновився
-LOSS_BAD     = 30.0   # % — вище = dead
-BAD_STREAK   = 2      # поспіль поганих → вимкнути (6 хв)
-GOOD_STREAK  = 2      # поспіль добрих → ввімкнути (6 хв)
 
 
 class ApiRos:
@@ -150,89 +141,17 @@ def ping_via_gw(a, probe_ip, gw, count=5):
     return avg, mx, loss
 
 
-def set_wan_routes(a, prefix, enabled):
-    """Enable/disable LB-w{prefix}* default routes (0.0.0.0/0 only)."""
-    cmd = "/ip/route/enable" if enabled else "/ip/route/disable"
-    count = 0
+def wan_routes_active(a, prefix):
+    """Return whether any LB-w{prefix} default route is currently enabled."""
+    found = False
     for row in get_rows(a, "/ip/route/print"):
         c   = row.get('=comment', '')
         dst = row.get('=dst-address', '')
         if c.startswith(f'LB-w{prefix}') and dst == '0.0.0.0/0':
-            a.talk([cmd, "=.id=" + row['=.id']])
-            count += 1
-    return count
-
-
-def load_state():
-    try:
-        with open(STATE_PATH) as f:
-            return json.load(f)
-    except:
-        return {
-            "zte":   {"disabled": False, "bad_streak": 0, "good_streak": 0},
-            "soyea": {"disabled": False, "bad_streak": 0, "good_streak": 0}
-        }
-
-
-def save_state(state):
-    with open(STATE_PATH, 'w') as f:
-        json.dump(state, f, indent=2)
-
-
-def manage(a, state, chan, avg_ms, max_ms, loss_pct, other_disabled):
-    """Quality-based route management. Returns action description or None."""
-    s      = state[chan]
-    prefix = "1" if chan == "zte" else "2"
-
-    is_bad  = (avg_ms is None
-               or avg_ms  > RTT_AVG_BAD
-               or (max_ms is not None and max_ms > RTT_MAX_BAD)
-               or loss_pct >= LOSS_BAD)
-    is_good = (avg_ms is not None
-               and avg_ms  <= RTT_AVG_GOOD
-               and (max_ms is None or max_ms <= RTT_MAX_GOOD)
-               and loss_pct < LOSS_BAD)
-
-    if not s["disabled"]:
-        if is_bad:
-            s["bad_streak"]  = min(s["bad_streak"] + 1, BAD_STREAK + 5)
-            s["good_streak"] = 0
-            if s["bad_streak"] >= BAD_STREAK:
-                if other_disabled:
-                    return f"деградує але інший канал вже вимкнений — лишаємо"
-                n = set_wan_routes(a, prefix, False)
-                s["disabled"] = True
-                s["bad_streak"] = 0
-                return f"ВИМКНЕНО avg>{RTT_AVG_BAD}мс або spike>{RTT_MAX_BAD}мс ({n} маршрутів)"
-        else:
-            s["bad_streak"] = max(0, s["bad_streak"] - 1)
-    else:
-        if is_good:
-            s["good_streak"]  = min(s["good_streak"] + 1, GOOD_STREAK + 5)
-            s["bad_streak"]   = 0
-            if s["good_streak"] >= GOOD_STREAK:
-                n = set_wan_routes(a, prefix, True)
-                s["disabled"]    = False
-                s["good_streak"] = 0
-                return f"ВІДНОВЛЕНО avg<{RTT_AVG_GOOD}мс spike<{RTT_MAX_GOOD}мс ({n} маршрутів)"
-        else:
-            s["good_streak"] = 0
-    return None
-
-
-def update_voip_routing(a, better_prefix, state):
-    """Point VOIP:route mangle rule to the currently better WAN."""
-    target = f"to_WAN{better_prefix}"
-    last   = state.get("voip_wan", "")
-    if last == target:
-        return None  # no change needed
-    for row in get_rows(a, "/ip/firewall/mangle/print"):
-        if row.get('=comment') == 'VOIP:route':
-            a.talk(["/ip/firewall/mangle/set", "=.id=" + row['=.id'],
-                    "=new-routing-mark=" + target])
-            state["voip_wan"] = target
-            return f"VOIP дзвінки → {target} (було: {last or '?'})"
-    return None  # rule not found (not set up yet)
+            found = True
+            if row.get('=disabled', '').lower() not in ('true', 'yes'):
+                return True
+    return False if found else None
 
 
 def main():
@@ -253,43 +172,14 @@ def main():
         if iface == 'ether3' and gw: gw1 = gw
         if iface == 'ether1' and gw: gw2 = gw
 
-    ts    = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    state = load_state()
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     # Measure both channels
     zte_avg,   zte_max,   zte_loss   = ping_via_gw(a, PROBE_ZTE,   gw1) if gw1 else (None, None, 100.0)
     soyea_avg, soyea_max, soyea_loss = ping_via_gw(a, PROBE_SOYEA, gw2) if gw2 else (None, None, 100.0)
 
-    # Quality management (LMT first, then BITE checks if LMT was just disabled)
-    zte_action   = manage(a, state, "zte",   zte_avg,   zte_max,   zte_loss,   state["soyea"]["disabled"])
-    soyea_action = manage(a, state, "soyea", soyea_avg, soyea_max, soyea_loss, state["zte"]["disabled"])
-
-    # Emergency: if the ONLY active channel is also bad → re-enable the disabled one.
-    # Two bad channels > one bad channel (more aggregate bandwidth, load distribution).
-    def is_bad_reading(avg, mx, loss):
-        return (avg is None or avg > RTT_AVG_BAD
-                or (mx is not None and mx > RTT_MAX_BAD)
-                or loss >= LOSS_BAD)
-
-    if state["zte"]["disabled"] and not state["soyea"]["disabled"]:
-        if is_bad_reading(soyea_avg, soyea_max, soyea_loss):
-            n = set_wan_routes(a, "1", True)
-            state["zte"]["disabled"] = False
-            state["zte"]["bad_streak"] = 0
-            zte_action = f"АВАРІЙНЕ ВІДНОВЛЕННЯ: BITE деградує → LMT повернено ({n} маршрутів)"
-
-    elif state["soyea"]["disabled"] and not state["zte"]["disabled"]:
-        if is_bad_reading(zte_avg, zte_max, zte_loss):
-            n = set_wan_routes(a, "2", True)
-            state["soyea"]["disabled"] = False
-            state["soyea"]["bad_streak"] = 0
-            soyea_action = f"АВАРІЙНЕ ВІДНОВЛЕННЯ: LMT деградує → BITE повернено ({n} маршрутів)"
-
-    voip_action  = None  # VOIP routing is static per-call — no dynamic updates (prevents mid-call IP change)
-    zte_active   = 0 if state["zte"]["disabled"]   else 1
-    soyea_active = 0 if state["soyea"]["disabled"] else 1
-
-    save_state(state)
+    zte_active   = 1 if wan_routes_active(a, "1") else 0
+    soyea_active = 1 if wan_routes_active(a, "2") else 0
     sk.close()
 
     # Write CSV
@@ -307,9 +197,6 @@ def main():
         return f"{name}:{q}{st}"
 
     print(f"{ts}  {fmt('LMT',zte_avg,zte_loss,zte_active)}  {fmt('BITE',soyea_avg,soyea_loss,soyea_active)}")
-    if zte_action:   print(f"  LMT   → {zte_action}")
-    if soyea_action: print(f"  BITE  → {soyea_action}")
-    if voip_action:  print(f"  VOIP  → {voip_action}")
 
 
 if __name__ == "__main__":
