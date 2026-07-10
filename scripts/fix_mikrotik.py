@@ -24,7 +24,7 @@ USER = os.environ.get("MIKROTIK_USER") or _ENV_FILE.get("MIKROTIK_USER", "admin"
 PW   = os.environ.get("MIKROTIK_PASS") or _ENV_FILE.get("MIKROTIK_PASS")
 if not PW:
     raise SystemExit("MIKROTIK_PASS не задано. Створи ~/.mikrotik.env з MIKROTIK_PASS=... або встанови env-змінну.")
-PROBE1, PROBE2 = "8.8.8.8", "1.1.1.1"   # 8.8.8.8 тест через WAN1(ZTE), 1.1.1.1 через WAN2(Soyea)
+PROBE1, PROBE2 = "8.8.8.8", "1.1.1.1"   # 8.8.8.8 тест через WAN1(LMT), 1.1.1.1 через WAN2(BITE)
 
 class ApiRos:
     def __init__(self, sk): self.sk=sk
@@ -118,8 +118,8 @@ if 'ether1' not in gw or 'ether3' not in gw:
     for r in rows(a,"/ip/dhcp-client/print"):
         if r.get('=interface') in ('ether1','ether3') and r.get('=status')=='bound' and r.get('=gateway'):
             gw[r['=interface']]=r['=gateway']
-gw1=gw.get('ether3'); gw2=gw.get('ether1')   # WAN1=ZTE, WAN2=Soyea
-print(f"WAN1 ZTE gw={gw1} | WAN2 Soyea gw={gw2}")
+gw1=gw.get('ether3'); gw2=gw.get('ether1')   # WAN1=LMT, WAN2=BITE
+print(f"WAN1 LMT gw={gw1} | WAN2 BITE gw={gw2}")
 if not gw1 and not gw2: print("Жоден канал без шлюзу — перевір кабелі."); raise SystemExit(1)
 
 # прибрати старе
@@ -144,9 +144,9 @@ if gw2:
 
 # netwatch авто-failover
 up1='/ip route enable [find comment~"^LB-w1"]'
-dn1='/ip route disable [find comment~"^LB-w1"]'
+dn1=':if ([:len [/ip route find comment~"^LB-w2" disabled=no]] > 0) do={ /ip route disable [find comment~"^LB-w1"] } else={ :log warning "LBnw1 guard: WAN2 already disabled; keeping WAN1 enabled" }'
 up2='/ip route enable [find comment~"^LB-w2"]'
-dn2='/ip route disable [find comment~"^LB-w2"]'
+dn2=':if ([:len [/ip route find comment~"^LB-w1" disabled=no]] > 0) do={ /ip route disable [find comment~"^LB-w2"] } else={ :log warning "LBnw2 guard: WAN1 already disabled; keeping WAN2 enabled" }'
 nw_ok=True
 nwbase=["=type=icmp","=interval=25s","=timeout=2s","=packet-count=12","=thr-loss-percent=55"]
 if gw1:
@@ -173,12 +173,12 @@ else:
         for r in rows(a,"/ip/route/print"):
             if r.get('=comment','').startswith('LB-w1') and r.get('=dst-address')=='0.0.0.0/0':
                 a.talk(["/ip/route/set","=.id="+r['=.id'],"=disabled=yes"])
-        print("  WAN1 (ZTE) мертвий -> вимкнено, все через WAN2")
+        print("  WAN1 (LMT) мертвий -> вимкнено, все через WAN2")
     if gw2 and test_wan(gw2)==0:
         for r in rows(a,"/ip/route/print"):
             if r.get('=comment','').startswith('LB-w2') and r.get('=dst-address')=='0.0.0.0/0':
                 a.talk(["/ip/route/set","=.id="+r['=.id'],"=disabled=yes"])
-        print("  WAN2 (Soyea) мертвий -> вимкнено, все через WAN1")
+        print("  WAN2 (BITE) мертвий -> вимкнено, все через WAN1")
 
 # звіт
 print("\n-- netwatch стан --")

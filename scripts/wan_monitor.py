@@ -32,8 +32,8 @@ STATE_PATH = os.path.expanduser("~/wan_state.json")
 CSV_HEADER = ["timestamp","zte_avg_ms","zte_max_ms","zte_loss_pct",
               "soyea_avg_ms","soyea_max_ms","soyea_loss_pct","zte_active","soyea_active"]
 
-PROBE_ZTE   = "4.2.2.1"    # Level3 DNS — тест через ZTE
-PROBE_SOYEA = "4.2.2.2"    # Level3 DNS — тест через Soyea
+PROBE_ZTE   = "4.2.2.1"    # Level3 DNS — тест через LMT
+PROBE_SOYEA = "4.2.2.2"    # Level3 DNS — тест через BITE
 
 RTT_AVG_BAD  = 150.0  # мс — середня вище = погано
 RTT_MAX_BAD  = 160.0  # мс — spike вище = погано (важливо для дзвінків)
@@ -260,7 +260,7 @@ def main():
     zte_avg,   zte_max,   zte_loss   = ping_via_gw(a, PROBE_ZTE,   gw1) if gw1 else (None, None, 100.0)
     soyea_avg, soyea_max, soyea_loss = ping_via_gw(a, PROBE_SOYEA, gw2) if gw2 else (None, None, 100.0)
 
-    # Quality management (ZTE first, then Soyea checks if ZTE was just disabled)
+    # Quality management (LMT first, then BITE checks if LMT was just disabled)
     zte_action   = manage(a, state, "zte",   zte_avg,   zte_max,   zte_loss,   state["soyea"]["disabled"])
     soyea_action = manage(a, state, "soyea", soyea_avg, soyea_max, soyea_loss, state["zte"]["disabled"])
 
@@ -276,14 +276,14 @@ def main():
             n = set_wan_routes(a, "1", True)
             state["zte"]["disabled"] = False
             state["zte"]["bad_streak"] = 0
-            zte_action = f"АВАРІЙНЕ ВІДНОВЛЕННЯ: Soyea деградує → ZTE повернено ({n} маршрутів)"
+            zte_action = f"АВАРІЙНЕ ВІДНОВЛЕННЯ: BITE деградує → LMT повернено ({n} маршрутів)"
 
     elif state["soyea"]["disabled"] and not state["zte"]["disabled"]:
         if is_bad_reading(zte_avg, zte_max, zte_loss):
             n = set_wan_routes(a, "2", True)
             state["soyea"]["disabled"] = False
             state["soyea"]["bad_streak"] = 0
-            soyea_action = f"АВАРІЙНЕ ВІДНОВЛЕННЯ: ZTE деградує → Soyea повернено ({n} маршрутів)"
+            soyea_action = f"АВАРІЙНЕ ВІДНОВЛЕННЯ: LMT деградує → BITE повернено ({n} маршрутів)"
 
     voip_action  = None  # VOIP routing is static per-call — no dynamic updates (prevents mid-call IP change)
     zte_active   = 0 if state["zte"]["disabled"]   else 1
@@ -306,9 +306,9 @@ def main():
         st = "" if active else " [ВИМКНЕНО]"
         return f"{name}:{q}{st}"
 
-    print(f"{ts}  {fmt('ZTE',zte_avg,zte_loss,zte_active)}  {fmt('Soyea',soyea_avg,soyea_loss,soyea_active)}")
-    if zte_action:   print(f"  ZTE   → {zte_action}")
-    if soyea_action: print(f"  Soyea → {soyea_action}")
+    print(f"{ts}  {fmt('LMT',zte_avg,zte_loss,zte_active)}  {fmt('BITE',soyea_avg,soyea_loss,soyea_active)}")
+    if zte_action:   print(f"  LMT   → {zte_action}")
+    if soyea_action: print(f"  BITE  → {soyea_action}")
     if voip_action:  print(f"  VOIP  → {voip_action}")
 
 

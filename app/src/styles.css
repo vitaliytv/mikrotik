@@ -167,3 +167,77 @@ table.events tr.down td {
 table.events tr.up td {
   color: #34d399;
 }
+
+.agent-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.agent-msg {
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  max-width: 80%;
+}
+
+.agent-msg.user {
+  align-self: flex-end;
+  background: #2a2a3e;
+  color: #eee;
+}
+
+.agent-msg.agent {
+  align-self: flex-start;
+  background: #16162a;
+  color: #ddd;
+}
+
+.agent-msg.error {
+  align-self: flex-start;
+  background: #3a1414;
+  color: #f87171;
+}
+
+.agent-msg .meta {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #888;
+}
+
+.agent-approval {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #3a2a14;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #fbbf24;
+}
+
+.agent-input {
+  display: flex;
+  gap: 10px;
+}
+
+.agent-input input[type="text"] {
+  flex: 1;
+  border-radius: 8px;
+  border: 1px solid #333;
+  padding: 0.5em 0.8em;
+  font-size: 0.9em;
+  font-family: inherit;
+  color: #eee;
+  background-color: #1e1e2e;
+}

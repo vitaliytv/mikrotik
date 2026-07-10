@@ -39,16 +39,56 @@ fn read_router_log() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+fn toggle_wan(channel: String, on: bool) -> Result<String, String> {
+    let output = Command::new("/usr/bin/python3")
+        .arg(home_path("wan_toggle.py"))
+        .arg(&channel)
+        .arg(if on { "on" } else { "off" })
+        .output()
+        .map_err(|e| e.to_string())?;
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(text)
+    }
+}
+
+#[tauri::command]
+fn restore_failover_config() -> Result<String, String> {
+    let output = Command::new("/usr/bin/python3")
+        .arg(home_path("fix_mikrotik.py"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(text)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_agent::init())
         .invoke_handler(tauri::generate_handler![
             read_wan_csv,
             read_wan_state,
             run_wan_monitor,
-            read_router_log
-        ])
+            read_router_log,
+            toggle_wan,
+            restore_failover_config
+        ]);
+
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

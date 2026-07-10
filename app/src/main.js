@@ -1,3 +1,5 @@
+import { requestAgent, respondAgent, approveAgent, hadToolActivity } from "./agent-gateway.js";
+
 const { invoke } = window.__TAURI__.core;
 
 Chart.register(window["chartjs-plugin-annotation"]);
@@ -17,19 +19,17 @@ const routerStatusEl = () => document.querySelector("#router-status");
 // ---------- період ----------
 
 function getPeriodRange() {
-  const sel = document.querySelector("#period").value;
-  const now = new Date();
-  if (sel === "all") return { from: null, to: null };
-  if (sel === "custom") {
-    const fromV = document.querySelector("#range-from").value;
-    const toV = document.querySelector("#range-to").value;
-    return {
-      from: fromV ? new Date(fromV) : null,
-      to: toV ? new Date(toV) : now,
-    };
-  }
-  const hours = parseFloat(sel);
-  return { from: new Date(now.getTime() - hours * 3600 * 1000), to: now };
+  const fromV = document.querySelector("#range-from").value;
+  const toV = document.querySelector("#range-to").value;
+  return {
+    from: fromV ? new Date(fromV) : null,
+    to: toV ? new Date(toV) : new Date(),
+  };
+}
+
+function toLocalInputValue(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function inRange(ts, range) {
@@ -131,8 +131,8 @@ function renderCsvCharts(rows) {
     "Затримка (ping) мс — менше краще",
     labels,
     [
-      { label: "ZTE", data: rows.map((r) => r.zteAvg), borderColor: "#60a5fa", backgroundColor: "#60a5fa22", tension: 0.3, spanGaps: true },
-      { label: "Soyea", data: rows.map((r) => r.soyeaAvg), borderColor: "#34d399", backgroundColor: "#34d39922", tension: 0.3, spanGaps: true },
+      { label: "LMT", data: rows.map((r) => r.zteAvg), borderColor: "#60a5fa", backgroundColor: "#60a5fa22", tension: 0.3, spanGaps: true },
+      { label: "BITE", data: rows.map((r) => r.soyeaAvg), borderColor: "#34d399", backgroundColor: "#34d39922", tension: 0.3, spanGaps: true },
       { label: `avg-поріг вимкнення (${RTT_AVG_BAD}мс)`, data: Array(n).fill(RTT_AVG_BAD), borderColor: "#f8717160", borderDash: [6, 4], borderWidth: 1, pointRadius: 0, fill: false },
       { label: `spike-поріг вимкнення (${RTT_MAX_BAD}мс)`, data: Array(n).fill(RTT_MAX_BAD), borderColor: "#fb923c60", borderDash: [4, 3], borderWidth: 1, pointRadius: 0, fill: false },
       { label: `avg-поріг відновлення (${RTT_AVG_GOOD}мс)`, data: Array(n).fill(RTT_AVG_GOOD), borderColor: "#34d39950", borderDash: [3, 4], borderWidth: 1, pointRadius: 0, fill: false },
@@ -146,8 +146,8 @@ function renderCsvCharts(rows) {
     "Втрати пакетів % — менше краще",
     labels,
     [
-      { label: "ZTE loss%", data: rows.map((r) => r.zteLoss), borderColor: "#f87171", backgroundColor: "#f8717122", tension: 0.3, spanGaps: true },
-      { label: "Soyea loss%", data: rows.map((r) => r.soyeaLoss), borderColor: "#fb923c", backgroundColor: "#fb923c22", tension: 0.3, spanGaps: true },
+      { label: "LMT loss%", data: rows.map((r) => r.zteLoss), borderColor: "#f87171", backgroundColor: "#f8717122", tension: 0.3, spanGaps: true },
+      { label: "BITE loss%", data: rows.map((r) => r.soyeaLoss), borderColor: "#fb923c", backgroundColor: "#fb923c22", tension: 0.3, spanGaps: true },
     ],
     "%",
     {},
@@ -163,7 +163,7 @@ function renderCsvCharts(rows) {
   if (last >= 0) {
     statusEl().textContent =
       `Точок: ${rows.length} | Останнє: ${labels[last]} ` +
-      `ZTE=${rows[last].zteAvg ?? "?"}мс Soyea=${rows[last].soyeaAvg ?? "?"}мс`;
+      `LMT=${rows[last].zteAvg ?? "?"}мс BITE=${rows[last].soyeaAvg ?? "?"}мс`;
   } else {
     statusEl().textContent = "Немає даних за цей період";
   }
@@ -212,7 +212,7 @@ function hourBucket(d) {
 function renderNetwatchCards(netwatch) {
   const el = document.getElementById("netwatch-cards");
   el.innerHTML = "";
-  const nameFor = { zte: "ZTE (WAN1)", soyea: "Soyea (WAN2)" };
+  const nameFor = { zte: "LMT (WAN1)", soyea: "BITE (WAN2)" };
   for (const nw of netwatch) {
     const card = document.createElement("div");
     card.className = `nw-card ${nw.status === "up" ? "up" : "down"}`;
@@ -240,8 +240,8 @@ function renderFlapsChart(events) {
     data: {
       labels,
       datasets: [
-        { label: "ZTE флапи/год", data: zte, backgroundColor: "#f87171" },
-        { label: "Soyea флапи/год", data: soyea, backgroundColor: "#fb923c" },
+        { label: "LMT флапи/год", data: zte, backgroundColor: "#f87171" },
+        { label: "BITE флапи/год", data: soyea, backgroundColor: "#fb923c" },
       ],
     },
     options: {
@@ -261,7 +261,7 @@ function renderFlapsChart(events) {
 function renderEventsTable(events) {
   const body = document.getElementById("events-body");
   body.innerHTML = "";
-  const nameFor = { zte: "ZTE", soyea: "Soyea" };
+  const nameFor = { zte: "LMT", soyea: "BITE" };
   const recent = events.slice(-300).reverse();
   for (const ev of recent) {
     const tr = document.createElement("tr");
@@ -292,6 +292,87 @@ async function loadRouterLog() {
   }
 }
 
+// ---------- агент ----------
+
+let lastRequestId = null;
+let lastStatus = null;
+
+function agentMessagesEl() {
+  return document.getElementById("agent-messages");
+}
+
+function appendAgentMessage(kind, text) {
+  const el = document.createElement("div");
+  el.className = `agent-msg ${kind}`;
+  el.textContent = text;
+  agentMessagesEl().appendChild(el);
+  agentMessagesEl().scrollTop = agentMessagesEl().scrollHeight;
+}
+
+function showApproval(requestId, pendingApproval) {
+  const box = document.getElementById("agent-approval");
+  const text = document.getElementById("agent-approval-text");
+  box.hidden = false;
+  text.textContent = `Потрібне підтвердження: ${pendingApproval.tool}(${JSON.stringify(pendingApproval.input)})`;
+  box.dataset.requestId = requestId;
+}
+
+function hideApproval() {
+  const box = document.getElementById("agent-approval");
+  box.hidden = true;
+  delete box.dataset.requestId;
+}
+
+function renderAgentResult(result) {
+  if (result.error) {
+    appendAgentMessage("error", result.error);
+  } else if (result.status === "needs_clarification" && result.question) {
+    appendAgentMessage("agent", result.question);
+  } else if (result.status === "needs_approval" && result.pendingApproval) {
+    appendAgentMessage("agent", "Потрібне підтвердження людини для деструктивної дії.");
+    showApproval(result.requestId, result.pendingApproval);
+  } else if (result.summary) {
+    appendAgentMessage("agent", result.summary);
+  } else {
+    appendAgentMessage("agent", `(статус: ${result.status})`);
+  }
+
+  lastRequestId = result.requestId ?? lastRequestId;
+  lastStatus = result.status;
+
+  if (result.status !== "needs_approval") hideApproval();
+  if (hadToolActivity(result)) {
+    loadCsv();
+    loadRouterLog();
+  }
+}
+
+async function sendAgentMessage(text) {
+  appendAgentMessage("user", text);
+  const sendBtn = document.getElementById("agent-send");
+  sendBtn.disabled = true;
+  try {
+    const result =
+      lastStatus === "needs_clarification" && lastRequestId
+        ? await respondAgent(lastRequestId, text)
+        : await requestAgent(text);
+    renderAgentResult(result);
+  } catch (e) {
+    appendAgentMessage("error", String(e?.message ?? e));
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+async function decideApproval(approve) {
+  const box = document.getElementById("agent-approval");
+  const requestId = box.dataset.requestId;
+  if (!requestId) return;
+  hideApproval();
+  const result = await approveAgent(requestId, approve);
+  renderAgentResult(result);
+}
+
 // ---------- init ----------
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -299,13 +380,22 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#measure").addEventListener("click", measureNow);
   document.querySelector("#refresh-router").addEventListener("click", loadRouterLog);
 
-  const periodSel = document.querySelector("#period");
-  const customRange = document.querySelector("#custom-range");
-  periodSel.addEventListener("change", () => {
-    customRange.hidden = periodSel.value !== "custom";
-    if (periodSel.value !== "custom") renderAll();
-  });
+  const now = new Date();
+  const threeHoursAgo = new Date(now.getTime() - 3 * 3600 * 1000);
+  document.querySelector("#range-from").value = toLocalInputValue(threeHoursAgo);
+  document.querySelector("#range-to").value = toLocalInputValue(now);
   document.querySelector("#apply-range").addEventListener("click", renderAll);
+
+  document.getElementById("agent-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = document.getElementById("agent-text");
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    sendAgentMessage(text);
+  });
+  document.getElementById("agent-approve").addEventListener("click", () => decideApproval(true));
+  document.getElementById("agent-reject").addEventListener("click", () => decideApproval(false));
 
   loadCsv();
   loadRouterLog();

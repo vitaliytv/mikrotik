@@ -61,7 +61,7 @@ html = f"""<!DOCTYPE html>
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
-<title>WAN Monitor — ZTE vs Soyea</title>
+<title>WAN Monitor — LMT vs BITE</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
 <style>
@@ -77,8 +77,8 @@ html = f"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h2>WAN якість: ZTE vs Soyea ({n} вимірювань)</h2>
-<div class="sub">Червона зона = ZTE вимкнено авто-failover &nbsp;|&nbsp; Помаранчева зона = Soyea вимкнено</div>
+<h2>WAN якість: LMT vs BITE ({n} вимірювань)</h2>
+<div class="sub">Червона зона = LMT вимкнено авто-failover &nbsp;|&nbsp; Помаранчева зона = BITE вимкнено</div>
 <div class="charts">
   <div class="box"><canvas id="rtt"></canvas></div>
   <div class="box"><canvas id="loss"></canvas></div>
@@ -110,9 +110,9 @@ const baseCfg = (title, datasets, yLabel, extraAnn) => ({{
 new Chart(document.getElementById('rtt'), baseCfg(
   'Затримка (ping) мс — менше краще',
   [
-    {{ label: 'ZTE',   data: {json.dumps(zte_avg)},
+    {{ label: 'LMT',   data: {json.dumps(zte_avg)},
        borderColor: '#60a5fa', backgroundColor: '#60a5fa22', tension: 0.3, spanGaps: true }},
-    {{ label: 'Soyea', data: {json.dumps(soyea_avg)},
+    {{ label: 'BITE', data: {json.dumps(soyea_avg)},
        borderColor: '#34d399', backgroundColor: '#34d39922', tension: 0.3, spanGaps: true }},
     {{ label: 'avg-поріг вимкнення (150мс)', data: Array(L.length).fill(150),
        borderColor: '#f8717160', borderDash: [6,4], borderWidth: 1,
@@ -129,9 +129,9 @@ new Chart(document.getElementById('rtt'), baseCfg(
 new Chart(document.getElementById('loss'), baseCfg(
   'Втрати пакетів % — менше краще',
   [
-    {{ label: 'ZTE loss%',   data: {json.dumps(zte_loss)},
+    {{ label: 'LMT loss%',   data: {json.dumps(zte_loss)},
        borderColor: '#f87171', backgroundColor: '#f8717122', tension: 0.3, spanGaps: true }},
-    {{ label: 'Soyea loss%', data: {json.dumps(soyea_loss)},
+    {{ label: 'BITE loss%', data: {json.dumps(soyea_loss)},
        borderColor: '#fb923c', backgroundColor: '#fb923c22', tension: 0.3, spanGaps: true }}
   ], '%', {{}}
 ));
