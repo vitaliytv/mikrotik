@@ -363,6 +363,146 @@ fn add_route(api: &mut routeros::ApiRos, comment: &str, gw: &str, dist: u32, tab
     let _ = api.talk(&words);
 }
 
+// Quality-based failover decision engine that runs entirely on the router,
+// triggered by netwatch's up/down hooks (see add_netwatch below) — not by
+// this app. Picks "both" enabled when both LMT/BITE are healthy
+// (loss<55%, avg RTT<150ms), the healthier one alone when only one is, the
+// lower-loss/lower-RTT one when both are degraded, and always fails open to
+// "both enabled" if neither probe is up or the script itself errors. This
+// mirrors the actual script found live on the router (via
+// /system/script/print) — restoring the older bare enable/disable hooks
+// here would silently replace this logic with something dumber next time
+// someone runs "Відновити конфігурацію".
+const LB_CONTROLLER_SCRIPT: &str = r#":global lbLock
+:global lbLastDecision
+:if ($lbLock = true) do={ :log warning "LBCTRL skip: previous run still active"; :return }
+:set lbLock true
+:do {
+  :local lossBad 55
+  :local avgBad 00:00:00.150
+  :local decision "both"
+  :local reason "fallback-both"
+  :local n1 [/tool/netwatch find comment="LBnw1"]
+  :local n2 [/tool/netwatch find comment="LBnw2"]
+  :local status1 "missing"
+  :local status2 "missing"
+  :local loss1 100
+  :local loss2 100
+  :local avg1 00:00:59
+  :local avg2 00:00:59
+  :local up1 false
+  :local up2 false
+  :local good1 false
+  :local good2 false
+
+  :if ([:len $n1] > 0) do={
+    :set status1 [/tool/netwatch get $n1 status]
+    :if ($status1 = "up") do={
+      :set up1 true
+      :set loss1 [/tool/netwatch get $n1 loss-percent]
+      :set avg1 [/tool/netwatch get $n1 rtt-avg]
+      :if ($loss1 < $lossBad) do={ :if ($avg1 < $avgBad) do={ :set good1 true } }
+    }
+  }
+  :if ([:len $n2] > 0) do={
+    :set status2 [/tool/netwatch get $n2 status]
+    :if ($status2 = "up") do={
+      :set up2 true
+      :set loss2 [/tool/netwatch get $n2 loss-percent]
+      :set avg2 [/tool/netwatch get $n2 rtt-avg]
+      :if ($loss2 < $lossBad) do={ :if ($avg2 < $avgBad) do={ :set good2 true } }
+    }
+  }
+
+  :if ($good1 = true) do={
+    :if ($good2 = true) do={
+      :set decision "both"; :set reason "both-good"
+    } else={
+      :set decision "wan1"; :set reason "lmt-good-bite-bad"
+    }
+  } else={
+    :if ($good2 = true) do={
+      :set decision "wan2"; :set reason "bite-good-lmt-bad"
+    } else={
+      :if ($up1 = true) do={
+        :if ($up2 = true) do={
+          :if ($loss1 < $loss2) do={
+            :set decision "wan1"; :set reason "both-bad-lmt-lower-loss"
+          } else={
+            :if ($loss2 < $loss1) do={
+              :set decision "wan2"; :set reason "both-bad-bite-lower-loss"
+            } else={
+              :if ($avg1 <= $avg2) do={
+                :set decision "wan1"; :set reason "both-bad-lmt-lower-rtt"
+              } else={
+                :set decision "wan2"; :set reason "both-bad-bite-lower-rtt"
+              }
+            }
+          }
+        } else={
+          :set decision "wan1"; :set reason "only-lmt-up"
+        }
+      } else={
+        :if ($up2 = true) do={
+          :set decision "wan2"; :set reason "only-bite-up"
+        } else={
+          :set decision "both"; :set reason "no-probe-up-keep-both"
+        }
+      }
+    }
+  }
+
+  :if ($decision = "both") do={
+    /ip route enable [find comment~"^LB-w1"]
+    /ip route enable [find comment~"^LB-w2"]
+  }
+  :if ($decision = "wan1") do={
+    /ip route enable [find comment~"^LB-w1"]
+    /ip route disable [find comment~"^LB-w2"]
+  }
+  :if ($decision = "wan2") do={
+    /ip route enable [find comment~"^LB-w2"]
+    /ip route disable [find comment~"^LB-w1"]
+  }
+
+  :global lbDecision $decision
+  :global lbDecisionReason $reason
+  :global lbUpdated ([/system/clock/get date] . " " . [/system/clock/get time])
+  :global lbLmtStatus $status1
+  :global lbBiteStatus $status2
+  :global lbLmtLoss $loss1
+  :global lbBiteLoss $loss2
+  :global lbLmtAvg $avg1
+  :global lbBiteAvg $avg2
+  :if ($lbLastDecision != $decision) do={
+    :log warning ("LBCTRL decision=" . $decision . " reason=" . $reason . " lmt=" . $status1 . "/loss" . $loss1 . "/avg" . $avg1 . " bite=" . $status2 . "/loss" . $loss2 . "/avg" . $avg2)
+  }
+  :set lbLastDecision $decision
+} on-error={
+  /ip route enable [find comment~"^LB-w1"]
+  /ip route enable [find comment~"^LB-w2"]
+  :global lbDecision "both-error"
+  :global lbDecisionReason "controller-error-keep-both"
+  :global lbUpdated ([/system/clock/get date] . " " . [/system/clock/get time])
+  :log error "LBCTRL error: keeping both WAN enabled"
+}
+:set lbLock false
+"#;
+
+fn ensure_lb_controller_script(api: &mut routeros::ApiRos) {
+    if let Ok(rows) = api.talk(&["/system/script/print"]) {
+        for (r, attrs) in rows {
+            if r == "!re" && attrs.get("=name").map(|s| s.as_str()) == Some("lbController") {
+                if let Some(id) = attrs.get("=.id") {
+                    let _ = api.talk(&["/system/script/set", &format!("=.id={}", id), &format!("=source={}", LB_CONTROLLER_SCRIPT)]);
+                }
+                return;
+            }
+        }
+    }
+    let _ = api.talk(&["/system/script/add", "=name=lbController", &format!("=source={}", LB_CONTROLLER_SCRIPT)]);
+}
+
 fn add_netwatch(api: &mut routeros::ApiRos, host: &str, comment: &str, up_script: &str, down_script: &str) -> bool {
     let host_arg = format!("=host={}", host);
     let comment_arg = format!("=comment={}", comment);
@@ -489,10 +629,11 @@ pub fn restore_failover_config_impl() -> Result<String, String> {
         add_route(&mut api, "LB-w2t1b", &gw, 2, Some("to_WAN1"), "0.0.0.0/0", &[]);
     }
 
-    let up1 = r#"/ip route enable [find comment~"^LB-w1"]"#;
-    let dn1 = r#":if ([:len [/ip route find comment~"^LB-w2" disabled=no]] > 0) do={ /ip route disable [find comment~"^LB-w1"] } else={ :log warning "LBnw1 guard: WAN2 already disabled; keeping WAN1 enabled" }"#;
-    let up2 = r#"/ip route enable [find comment~"^LB-w2"]"#;
-    let dn2 = r#":if ([:len [/ip route find comment~"^LB-w1" disabled=no]] > 0) do={ /ip route disable [find comment~"^LB-w2"] } else={ :log warning "LBnw2 guard: WAN1 already disabled; keeping WAN2 enabled" }"#;
+    ensure_lb_controller_script(&mut api);
+    let up1 = r#"/system script run lbController; :log warning "LBnw1 probe up -> lbController""#;
+    let dn1 = r#"/system script run lbController; :log warning "LBnw1 probe down -> lbController""#;
+    let up2 = r#"/system script run lbController; :log warning "LBnw2 probe up -> lbController""#;
+    let dn2 = r#"/system script run lbController; :log warning "LBnw2 probe down -> lbController""#;
 
     let mut nw_ok = true;
     if gw1.is_some() {
