@@ -274,22 +274,43 @@ fn tag_for(probe_ip: &str) -> String {
     let chars: Vec<char> = probe_ip.chars().collect();
     let start = chars.len().saturating_sub(3);
     let last3: String = chars[start..].iter().collect();
-    format!("MON{}", last3.replace('.', ""))
+    format!("APP-probe-{}", last3.replace('.', ""))
 }
 
-fn remove_by_comment(api: &mut ApiRos, print_cmd: &str, remove_cmd: &str, tag: &str) {
-    if let Ok(rows) = api.talk(&[print_cmd]) {
+/// Make sure a permanent /32 route to `probe_ip` via `gw` exists under
+/// `comment`, creating it once and fixing the gateway in place if it ever
+/// drifts (e.g. a DHCP lease renewal). Replaces the old add-before/remove-after
+/// temp route per measurement cycle, which logged an add+remove pair on the
+/// router every 15s and was crowding out real netwatch events in its log
+/// buffer (see the flap-detection fix). A permanent host route to one
+/// specific IP doesn't affect any other traffic, so leaving it in place is
+/// harmless.
+/// Returns true if the route was just created or its gateway just changed
+/// (i.e. the caller should give it a moment to converge before using it).
+fn ensure_probe_route(api: &mut ApiRos, comment: &str, probe_ip: &str, gw: &str) -> bool {
+    if let Ok(rows) = api.talk(&["/ip/route/print"]) {
         for (r, attrs) in rows {
             if r != "!re" {
                 continue;
             }
-            if attrs.get("=comment").map(|s| s.as_str()) == Some(tag) {
-                if let Some(id) = attrs.get("=.id") {
-                    let _ = api.talk(&[remove_cmd, &format!("=.id={}", id)]);
+            if attrs.get("=comment").map(|s| s.as_str()) == Some(comment) {
+                if attrs.get("=gateway").map(|s| s.as_str()) != Some(gw) {
+                    if let Some(id) = attrs.get("=.id") {
+                        let _ = api.talk(&["/ip/route/set", &format!("=.id={}", id), &format!("=gateway={}", gw)]);
+                    }
+                    return true;
                 }
+                return false;
             }
         }
     }
+    let _ = api.talk(&[
+        "/ip/route/add",
+        &format!("=dst-address={}/32", probe_ip),
+        &format!("=gateway={}", gw),
+        &format!("=comment={}", comment),
+    ]);
+    true
 }
 
 /// Result of probing one WAN channel: latency/loss plus a rough active
@@ -333,18 +354,13 @@ fn active_throughput_mbps(api: &mut ApiRos, probe_ip: &str, count: u32) -> Optio
     Some((bits / elapsed / 1e6 * 100.0).round() / 100.0)
 }
 
-/// Latency/loss ping plus the active-throughput probe, sharing one temporary
-/// /32 route pinned to `gw` so the channel is only touched once per cycle.
+/// Latency/loss ping plus the active-throughput probe, pinned to `gw` via a
+/// permanent /32 route (see `ensure_probe_route`) instead of a per-cycle
+/// temporary one.
 pub fn probe_channel(api: &mut ApiRos, probe_ip: &str, gw: &str, latency_count: u32, speed_count: u32) -> ChannelProbe {
-    let tag = tag_for(probe_ip);
-    remove_by_comment(api, "/ip/route/print", "/ip/route/remove", &tag);
-    let _ = api.talk(&[
-        "/ip/route/add",
-        &format!("=dst-address={}/32", probe_ip),
-        &format!("=gateway={}", gw),
-        &format!("=comment={}", tag),
-    ]);
-    std::thread::sleep(Duration::from_millis(500));
+    if ensure_probe_route(api, &tag_for(probe_ip), probe_ip, gw) {
+        std::thread::sleep(Duration::from_millis(500));
+    }
 
     let (avg_ms, loss_pct) = match api.talk(&["/ping", &format!("=address={}", probe_ip), &format!("=count={}", latency_count)]) {
         Ok(rows) => match rows.into_iter().filter(|(r, _)| r == "!re").last() {
@@ -361,7 +377,6 @@ pub fn probe_channel(api: &mut ApiRos, probe_ip: &str, gw: &str, latency_count: 
     // saturating a dead link's retry budget for a number that'll be None anyway.
     let active_mbps = if loss_pct < 50.0 { active_throughput_mbps(api, probe_ip, speed_count) } else { None };
 
-    remove_by_comment(api, "/ip/route/print", "/ip/route/remove", &tag);
     ChannelProbe { avg_ms, loss_pct, active_mbps }
 }
 
