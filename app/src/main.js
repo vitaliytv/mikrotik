@@ -1,103 +1,31 @@
 import { requestAgent, respondAgent, approveAgent, hadToolActivity } from "./agent-gateway.js";
 
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 
 Chart.register(window["chartjs-plugin-annotation"]);
 
-const RTT_AVG_BAD = 150;
-const RTT_MAX_BAD = 160;
-const RTT_AVG_GOOD = 100;
+const LIVE_MAX_POINTS = 240; // 240 * 15с ≈ 1 година в пам'яті, поки застосунок відкритий
 
 let rttChart, lossChart, flapsChart, speedChart;
-let csvRows = []; // {ts: Date, zteAvg, zteLoss, zteActive, soyeaAvg, soyeaLoss, soyeaActive}
+let liveSamples = []; // {ts: Date, zteAvg, zteLoss, soyeaAvg, soyeaLoss} — тільки в пам'яті, без persist
 let flapEvents = []; // {ts: Date, time, channel, action}
 let netwatchCache = [];
 let speedSamples = []; // {t: epoch_ms, zteRx, zteTx, soyeaRx, soyeaTx} — Mbps
+let rawLogCache = []; // {time, topics, message}
 
 const statusEl = () => document.querySelector("#status");
 const routerStatusEl = () => document.querySelector("#router-status");
 const speedStatusEl = () => document.querySelector("#speed-status");
 
-// ---------- період ----------
+// ---------- live-моніторинг (RTT + втрати, кожні 15с, поки застосунок запущений) ----------
 
-function getPeriodRange() {
-  const fromV = document.querySelector("#range-from").value;
-  const toV = document.querySelector("#range-to").value;
-  return {
-    from: fromV ? new Date(fromV) : null,
-    to: toV ? new Date(toV) : new Date(),
-  };
+function fmtClock(d) {
+  const pad = (x) => String(x).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function toLocalInputValue(d) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function inRange(ts, range) {
-  if (range.from && ts < range.from) return false;
-  if (range.to && ts > range.to) return false;
-  return true;
-}
-
-function renderAll() {
-  const range = getPeriodRange();
-  renderCsvCharts(csvRows.filter((r) => inRange(r.ts, range)));
-  renderFlapsChart(flapEvents.filter((e) => inRange(e.ts, range)));
-  renderEventsTable(flapEvents.filter((e) => inRange(e.ts, range)));
-}
-
-// ---------- wan_log.csv ----------
-
-function parseCsv(text) {
-  const lines = text.trim().split("\n");
-  const rows = lines.slice(1).map((line) => line.split(","));
-  const out = [];
-  for (const r of rows) {
-    const [ts, za, , zl, sa, , sl, zact, sact] = r;
-    if (!ts) continue;
-    out.push({
-      ts: new Date(ts),
-      label: ts,
-      zteAvg: za ? parseFloat(za) : null,
-      zteLoss: zl ? parseFloat(zl) : 100,
-      zteActive: zact !== undefined && zact !== "" ? parseInt(zact, 10) : 1,
-      soyeaAvg: sa ? parseFloat(sa) : null,
-      soyeaLoss: sl ? parseFloat(sl) : 100,
-      soyeaActive: sact !== undefined && sact !== "" ? parseInt(sact, 10) : 1,
-    });
-  }
-  return out;
-}
-
-function fmtLabel(d) {
-  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-function disabledAnnotations(activeList, color) {
-  const anns = {};
-  let i = 0;
-  while (i < activeList.length) {
-    if (activeList[i] === 0) {
-      const start = i;
-      while (i < activeList.length && activeList[i] === 0) i++;
-      const end = i - 1;
-      anns[`box_${color}_${start}`] = {
-        type: "box",
-        xMin: start,
-        xMax: end,
-        backgroundColor: color,
-        borderWidth: 0,
-        label: { display: false },
-      };
-    } else {
-      i++;
-    }
-  }
-  return anns;
-}
-
-function baseCfg(title, labels, datasets, yLabel, annotations, pointCount) {
+function baseCfg(title, labels, datasets, yLabel, pointCount) {
   return {
     type: "line",
     data: { labels, datasets },
@@ -106,53 +34,43 @@ function baseCfg(title, labels, datasets, yLabel, annotations, pointCount) {
       plugins: {
         title: { display: true, text: title, color: "#7dd3fc", font: { size: 14 } },
         legend: { labels: { color: "#ccc" } },
-        annotation: { annotations },
       },
       scales: {
-        x: { ticks: { color: "#888", maxTicksLimit: 24, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
+        x: { ticks: { color: "#888", maxTicksLimit: 20, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
         y: {
           ticks: { color: "#ccc" },
           grid: { color: "#2a2a3e" },
           title: { display: true, text: yLabel, color: "#aaa" },
         },
       },
-      elements: { point: { radius: pointCount > 100 ? 0 : 2 } },
+      elements: { point: { radius: pointCount > 60 ? 0 : 2 } },
     },
   };
 }
 
-function renderCsvCharts(rows) {
-  const labels = rows.map((r) => fmtLabel(r.ts));
-  const n = rows.length;
-
-  const annZte = disabledAnnotations(rows.map((r) => r.zteActive), "rgba(239,68,68,0.18)");
-  const annSoyea = disabledAnnotations(rows.map((r) => r.soyeaActive), "rgba(251,146,60,0.18)");
-  const allAnn = { ...annZte, ...annSoyea };
+function renderLiveCharts() {
+  const labels = liveSamples.map((s) => fmtClock(s.ts));
+  const n = liveSamples.length;
 
   const rttCfg = baseCfg(
-    "Затримка (ping) мс — менше краще",
+    "Затримка (ping) мс — кожні 15с — менше краще",
     labels,
     [
-      { label: "LMT", data: rows.map((r) => r.zteAvg), borderColor: "#60a5fa", backgroundColor: "#60a5fa22", tension: 0.3, spanGaps: true },
-      { label: "BITE", data: rows.map((r) => r.soyeaAvg), borderColor: "#34d399", backgroundColor: "#34d39922", tension: 0.3, spanGaps: true },
-      { label: `avg-поріг вимкнення (${RTT_AVG_BAD}мс)`, data: Array(n).fill(RTT_AVG_BAD), borderColor: "#f8717160", borderDash: [6, 4], borderWidth: 1, pointRadius: 0, fill: false },
-      { label: `spike-поріг вимкнення (${RTT_MAX_BAD}мс)`, data: Array(n).fill(RTT_MAX_BAD), borderColor: "#fb923c60", borderDash: [4, 3], borderWidth: 1, pointRadius: 0, fill: false },
-      { label: `avg-поріг відновлення (${RTT_AVG_GOOD}мс)`, data: Array(n).fill(RTT_AVG_GOOD), borderColor: "#34d39950", borderDash: [3, 4], borderWidth: 1, pointRadius: 0, fill: false },
+      { label: "LMT", data: liveSamples.map((s) => s.zteAvg), borderColor: "#60a5fa", backgroundColor: "#60a5fa22", tension: 0.3, spanGaps: true },
+      { label: "BITE", data: liveSamples.map((s) => s.soyeaAvg), borderColor: "#34d399", backgroundColor: "#34d39922", tension: 0.3, spanGaps: true },
     ],
     "мс",
-    allAnn,
     n,
   );
 
   const lossCfg = baseCfg(
-    "Втрати пакетів % — менше краще",
+    "Втрати пакетів % — кожні 15с — менше краще",
     labels,
     [
-      { label: "LMT loss%", data: rows.map((r) => r.zteLoss), borderColor: "#f87171", backgroundColor: "#f8717122", tension: 0.3, spanGaps: true },
-      { label: "BITE loss%", data: rows.map((r) => r.soyeaLoss), borderColor: "#fb923c", backgroundColor: "#fb923c22", tension: 0.3, spanGaps: true },
+      { label: "LMT loss%", data: liveSamples.map((s) => s.zteLoss), borderColor: "#f87171", backgroundColor: "#f8717122", tension: 0.3, spanGaps: true },
+      { label: "BITE loss%", data: liveSamples.map((s) => s.soyeaLoss), borderColor: "#fb923c", backgroundColor: "#fb923c22", tension: 0.3, spanGaps: true },
     ],
     "%",
-    {},
     n,
   );
 
@@ -161,35 +79,36 @@ function renderCsvCharts(rows) {
   rttChart = new Chart(document.getElementById("rtt"), rttCfg);
   lossChart = new Chart(document.getElementById("loss"), lossCfg);
 
-  const last = rows.length - 1;
-  if (last >= 0) {
+  const last = liveSamples[liveSamples.length - 1];
+  if (last) {
     statusEl().textContent =
-      `Точок: ${rows.length} | Останнє: ${labels[last]} ` +
-      `LMT=${rows[last].zteAvg ?? "?"}мс BITE=${rows[last].soyeaAvg ?? "?"}мс`;
+      `Точок у пам'яті: ${n} | Останнє: ${fmtClock(last.ts)} ` +
+      `LMT=${last.zteAvg ?? "?"}мс/${last.zteLoss}% BITE=${last.soyeaAvg ?? "?"}мс/${last.soyeaLoss}%`;
   } else {
-    statusEl().textContent = "Немає даних за цей період";
+    statusEl().textContent = "Очікую перший вимір (до 15с)...";
   }
 }
 
-async function loadCsv() {
-  try {
-    const csv = await invoke("read_wan_csv");
-    csvRows = parseCsv(csv);
-    renderAll();
-  } catch (e) {
-    statusEl().textContent = `Помилка читання CSV: ${e}`;
-  }
+function onWanSample(sample) {
+  liveSamples.push({
+    ts: new Date(sample.ts),
+    zteAvg: sample.zte_avg,
+    zteLoss: sample.zte_loss,
+    soyeaAvg: sample.soyea_avg,
+    soyeaLoss: sample.soyea_loss,
+  });
+  if (liveSamples.length > LIVE_MAX_POINTS) liveSamples.shift();
+  renderLiveCharts();
 }
 
 async function measureNow() {
-  statusEl().textContent = "Виконую вимір...";
+  statusEl().textContent = "Виконую позачерговий вимір...";
   try {
-    const out = await invoke("run_wan_monitor");
-    statusEl().textContent = out.trim().split("\n").pop() || "Готово";
+    const out = await invoke("measure_now");
+    statusEl().textContent = out;
   } catch (e) {
     statusEl().textContent = `Помилка: ${e}`;
   }
-  await loadCsv();
 }
 
 // ---------- швидкість ----------
@@ -208,12 +127,6 @@ function loadSpeedSamples() {
   }
 }
 
-function fmtTime(ms) {
-  const d = new Date(ms);
-  const pad = (x) => String(x).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
 function fmtMbps(v) {
   if (v == null) return "?";
   return v >= 100 ? Math.round(v) : v.toFixed(1);
@@ -221,22 +134,21 @@ function fmtMbps(v) {
 
 function speedDatasets() {
   return [
-    { key: "zteRx", label: "ZTE ↓", borderColor: "#60a5fa", backgroundColor: "#60a5fa22", fill: true },
-    { key: "zteTx", label: "ZTE ↑", borderColor: "#60a5fa", borderDash: [5, 4], fill: false },
-    { key: "soyeaRx", label: "Soyea ↓", borderColor: "#34d399", backgroundColor: "#34d39922", fill: true },
-    { key: "soyeaTx", label: "Soyea ↑", borderColor: "#34d399", borderDash: [5, 4], fill: false },
+    { key: "zteRx", label: "LMT ↓", borderColor: "#60a5fa", backgroundColor: "#60a5fa22", fill: true },
+    { key: "zteTx", label: "LMT ↑", borderColor: "#60a5fa", borderDash: [5, 4], fill: false },
+    { key: "soyeaRx", label: "BITE ↓", borderColor: "#34d399", backgroundColor: "#34d39922", fill: true },
+    { key: "soyeaTx", label: "BITE ↑", borderColor: "#34d399", borderDash: [5, 4], fill: false },
   ];
 }
 
 function channelActive(chan) {
-  if (!csvRows.length) return true;
-  const last = csvRows[csvRows.length - 1];
-  return chan === "zte" ? last.zteActive === 1 : last.soyeaActive === 1;
+  const nw = netwatchCache.find((n) => n.channel === chan);
+  return nw ? nw.status === "up" : true;
 }
 
 function renderSpeedChart() {
   const mode = document.querySelector("#speed-mode").value;
-  const labels = speedSamples.map((s) => fmtTime(s.t));
+  const labels = speedSamples.map((s) => fmtClock(new Date(s.t)));
   const n = speedSamples.length;
 
   const datasets = speedDatasets()
@@ -310,8 +222,8 @@ async function pollSpeed() {
 
     const last = speedSamples[speedSamples.length - 1];
     speedStatusEl().textContent =
-      `ZTE ↓${fmtMbps(last.zteRx)} ↑${fmtMbps(last.zteTx)} | ` +
-      `Soyea ↓${fmtMbps(last.soyeaRx)} ↑${fmtMbps(last.soyeaTx)} Mbps`;
+      `LMT ↓${fmtMbps(last.zteRx)} ↑${fmtMbps(last.zteTx)} | ` +
+      `BITE ↓${fmtMbps(last.soyeaRx)} ↑${fmtMbps(last.soyeaTx)} Mbps`;
   } catch (e) {
     speedStatusEl().textContent = `Помилка: ${e}`;
   }
@@ -398,6 +310,17 @@ function renderEventsTable(events) {
   }
 }
 
+function renderRawLog() {
+  const filter = document.getElementById("raw-log-filter").value.trim().toLowerCase();
+  const rows = filter
+    ? rawLogCache.filter((r) => `${r.time} ${r.topics} ${r.message}`.toLowerCase().includes(filter))
+    : rawLogCache;
+  document.getElementById("raw-log-count").textContent = rows.length;
+  document.getElementById("raw-log-view").textContent = rows
+    .map((r) => `${r.time}  [${r.topics}]  ${r.message}`)
+    .join("\n");
+}
+
 async function loadRouterLog() {
   routerStatusEl().textContent = "Читаю лог роутера...";
   try {
@@ -409,11 +332,13 @@ async function loadRouterLog() {
     }
     netwatchCache = data.netwatch || [];
     flapEvents = (data.flap_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
+    rawLogCache = data.raw_log || [];
     renderNetwatchCards(netwatchCache);
-    renderAll();
-    const range = getPeriodRange();
-    const downCount = flapEvents.filter((e) => e.action === "down" && inRange(e.ts, range)).length;
-    routerStatusEl().textContent = `Проаналізовано ${data.log_total_lines} рядків логу | flap-подій за період: ${downCount}`;
+    renderFlapsChart(flapEvents);
+    renderEventsTable(flapEvents);
+    if (!document.getElementById("raw-log-box").hidden) renderRawLog();
+    const downCount = flapEvents.filter((e) => e.action === "down").length;
+    routerStatusEl().textContent = `Проаналізовано ${data.log_total_lines} рядків логу | flap-подій: ${downCount}`;
   } catch (e) {
     routerStatusEl().textContent = `Помилка: ${e}`;
   }
@@ -469,7 +394,6 @@ function renderAgentResult(result) {
 
   if (result.status !== "needs_approval") hideApproval();
   if (hadToolActivity(result)) {
-    loadCsv();
     loadRouterLog();
   }
 }
@@ -503,19 +427,23 @@ async function decideApproval(approve) {
 // ---------- init ----------
 
 window.addEventListener("DOMContentLoaded", () => {
-  document.querySelector("#refresh").addEventListener("click", loadCsv);
   document.querySelector("#measure").addEventListener("click", measureNow);
   document.querySelector("#refresh-router").addEventListener("click", loadRouterLog);
 
-  const now = new Date();
-  const threeHoursAgo = new Date(now.getTime() - 3 * 3600 * 1000);
-  document.querySelector("#range-from").value = toLocalInputValue(threeHoursAgo);
-  document.querySelector("#range-to").value = toLocalInputValue(now);
-  document.querySelector("#apply-range").addEventListener("click", renderAll);
+  document.getElementById("toggle-raw-log").addEventListener("click", () => {
+    const box = document.getElementById("raw-log-box");
+    box.hidden = !box.hidden;
+    document.getElementById("toggle-raw-log").textContent = box.hidden
+      ? "Показати лог MikroTik"
+      : "Сховати лог MikroTik";
+    if (!box.hidden) renderRawLog();
+  });
+  document.getElementById("raw-log-filter").addEventListener("input", renderRawLog);
   document.querySelector("#speed-mode").addEventListener("change", renderSpeedChart);
 
   loadSpeedSamples();
   renderSpeedChart();
+  renderLiveCharts();
 
   document.getElementById("agent-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -528,10 +456,10 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("agent-approve").addEventListener("click", () => decideApproval(true));
   document.getElementById("agent-reject").addEventListener("click", () => decideApproval(false));
 
-  loadCsv();
+  listen("wan-sample", (event) => onWanSample(event.payload));
+
   loadRouterLog();
   pollSpeed();
-  setInterval(loadCsv, 30000);
   setInterval(loadRouterLog, 60000);
   setInterval(pollSpeed, SPEED_POLL_MS);
 });

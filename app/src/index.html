@@ -10,27 +10,15 @@
   </head>
   <body>
     <header>
-      <h1>WAN якість: LMT vs BITE</h1>
+      <h1>WAN якість: LMT vs BITE (live, кожні 15с)</h1>
       <div class="controls">
-        <label for="range-from">Період:</label>
-        <span id="custom-range" class="custom-range">
-          <input type="datetime-local" id="range-from" />
-          —
-          <input type="datetime-local" id="range-to" />
-          <button id="apply-range">Застосувати</button>
-        </span>
         <span id="status">—</span>
-        <button id="refresh">Оновити</button>
         <button id="measure">Виміряти зараз</button>
       </div>
     </header>
     <div class="charts">
       <div class="box"><canvas id="rtt"></canvas></div>
       <div class="box"><canvas id="loss"></canvas></div>
-    </div>
-    <div class="legend">
-      <span class="leg"><span class="sq" style="background:rgba(239,68,68,0.4)"></span> LMT вимкнено</span>
-      <span class="leg"><span class="sq" style="background:rgba(251,146,60,0.4)"></span> BITE вимкнено</span>
     </div>
 
     <header style="margin-top:28px">
@@ -53,6 +41,7 @@
       <div class="controls">
         <span id="router-status">—</span>
         <button id="refresh-router">Оновити лог</button>
+        <button id="toggle-raw-log">Показати лог MikroTik</button>
       </div>
     </header>
     <div class="charts">
@@ -66,6 +55,13 @@
           <tbody id="events-body"></tbody>
         </table>
       </div>
+    </div>
+    <div class="box raw-log" id="raw-log-box" hidden>
+      <div class="raw-log-toolbar">
+        <span>Сирий лог MikroTik (останні <span id="raw-log-count">0</span> рядків)</span>
+        <input type="text" id="raw-log-filter" placeholder="Фільтр по тексту…" autocomplete="off" />
+      </div>
+      <pre class="raw-log-view" id="raw-log-view"></pre>
     </div>
 
     <header style="margin-top:28px">

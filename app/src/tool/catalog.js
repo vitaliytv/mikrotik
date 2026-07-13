@@ -13,35 +13,26 @@ function validateChannel(input) {
 export const TOOLS = [
   {
     tier: "read",
-    name: "read_wan_log",
-    summary:
-      "Read the full ~/wan_log.csv measurement history (timestamp, RTT avg/max, loss%, active flag per WAN channel).",
-    input: {},
-    tauri: "read_wan_csv",
-  },
-  {
-    tier: "read",
-    name: "read_wan_state",
-    summary:
-      "Read the current per-WAN failover state (~/wan_state.json): disabled flag and bad/good streak counts for each channel.",
-    input: {},
-    tauri: "read_wan_state",
-  },
-  {
-    tier: "read",
     name: "read_router_events",
     summary:
-      "Read recent MikroTik router log: netwatch status per channel and a flap-event history (channel disabled/re-enabled).",
+      "Read recent MikroTik router log: netwatch status per channel and a flap-event history (channel disabled/re-enabled by netwatch, the sole failover mechanism — runs entirely on the router).",
     input: {},
     tauri: "read_router_log",
   },
   {
-    tier: "write",
+    tier: "read",
+    name: "read_wan_speed",
+    summary: "Read the current instantaneous rx/tx bits-per-second for both WAN interfaces.",
+    input: {},
+    tauri: "read_wan_speed",
+  },
+  {
+    tier: "read",
     name: "measure_now",
     summary:
-      "Trigger an immediate WAN quality measurement (ping both channels via the router) instead of waiting for the next cron run; may also disable/enable a channel per quality thresholds.",
+      "Trigger an immediate one-off RTT/packet-loss measurement for both WAN channels (ping via the router, same probes netwatch uses). Read-only — does not change any routing.",
     input: {},
-    tauri: "run_wan_monitor",
+    tauri: "measure_now",
   },
   {
     tier: "destructive",
