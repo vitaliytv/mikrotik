@@ -2,7 +2,7 @@ mod routeros;
 
 use regex::Regex;
 use routeros::{
-    channel_for_host, connect_and_login, get_gateways, ping_via_gw, read_traffic, set_wan_routes, PROBE_SOYEA,
+    channel_for_host, connect_and_login, get_gateways, probe_channel, read_traffic, set_wan_routes, PROBE_SOYEA,
     PROBE_ZTE,
 };
 use serde::Serialize;
@@ -12,7 +12,9 @@ use tauri::{AppHandle, Emitter};
 
 const MONITOR_INTERVAL: Duration = Duration::from_secs(15);
 const MONITOR_PING_COUNT: u32 = 3;
+const MONITOR_SPEED_PROBE_COUNT: u32 = 8;
 const MEASURE_NOW_PING_COUNT: u32 = 5;
+const MEASURE_NOW_SPEED_PROBE_COUNT: u32 = 15;
 
 #[derive(Serialize, Clone)]
 struct WanSample {
@@ -25,36 +27,37 @@ struct WanSample {
     zte_tx_bps: Option<i64>,
     soyea_rx_bps: Option<i64>,
     soyea_tx_bps: Option<i64>,
+    // Active ping-burst throughput proxy (see routeros::probe_channel) — unlike
+    // the passive rx/tx above, this reports something for a channel that's
+    // carrying no real traffic (e.g. BITE while LMT is primary).
+    zte_active_mbps: Option<f64>,
+    soyea_active_mbps: Option<f64>,
 }
 
 fn now_iso() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
-fn measure_sample(ping_count: u32) -> WanSample {
+fn measure_sample(ping_count: u32, speed_count: u32) -> WanSample {
     let ts = now_iso();
     match connect_and_login(Duration::from_secs(8)) {
         Ok(mut api) => {
             let (gw1, gw2) = get_gateways(&mut api);
-            let (zte_avg, _, zte_loss) = match gw1 {
-                Some(gw) => ping_via_gw(&mut api, PROBE_ZTE, &gw, ping_count),
-                None => (None, None, 100.0),
-            };
-            let (soyea_avg, _, soyea_loss) = match gw2 {
-                Some(gw) => ping_via_gw(&mut api, PROBE_SOYEA, &gw, ping_count),
-                None => (None, None, 100.0),
-            };
+            let zte = gw1.map(|gw| probe_channel(&mut api, PROBE_ZTE, &gw, ping_count, speed_count));
+            let soyea = gw2.map(|gw| probe_channel(&mut api, PROBE_SOYEA, &gw, ping_count, speed_count));
             let (zte_rx_bps, zte_tx_bps, soyea_rx_bps, soyea_tx_bps) = read_traffic(&mut api);
             WanSample {
                 ts,
-                zte_avg,
-                zte_loss,
-                soyea_avg,
-                soyea_loss,
+                zte_avg: zte.as_ref().and_then(|c| c.avg_ms),
+                zte_loss: zte.as_ref().map(|c| c.loss_pct).unwrap_or(100.0),
+                soyea_avg: soyea.as_ref().and_then(|c| c.avg_ms),
+                soyea_loss: soyea.as_ref().map(|c| c.loss_pct).unwrap_or(100.0),
                 zte_rx_bps,
                 zte_tx_bps,
                 soyea_rx_bps,
                 soyea_tx_bps,
+                zte_active_mbps: zte.as_ref().and_then(|c| c.active_mbps),
+                soyea_active_mbps: soyea.as_ref().and_then(|c| c.active_mbps),
             }
         }
         Err(_) => WanSample {
@@ -67,6 +70,8 @@ fn measure_sample(ping_count: u32) -> WanSample {
             zte_tx_bps: None,
             soyea_rx_bps: None,
             soyea_tx_bps: None,
+            zte_active_mbps: None,
+            soyea_active_mbps: None,
         },
     }
 }
@@ -74,7 +79,7 @@ fn measure_sample(ping_count: u32) -> WanSample {
 fn start_monitor_thread(app: AppHandle) {
     std::thread::spawn(move || loop {
         let start = std::time::Instant::now();
-        let sample = measure_sample(MONITOR_PING_COUNT);
+        let sample = measure_sample(MONITOR_PING_COUNT, MONITOR_SPEED_PROBE_COUNT);
         let _ = app.emit("wan-sample", &sample);
         let elapsed = start.elapsed();
         if elapsed < MONITOR_INTERVAL {
@@ -83,19 +88,32 @@ fn start_monitor_thread(app: AppHandle) {
     });
 }
 
-#[tauri::command]
-fn measure_now() -> String {
-    let s = measure_sample(MEASURE_NOW_PING_COUNT);
+// `#[tauri::command]` doesn't tolerate a `pub fn` (duplicate macro-namespace
+// item errors), so each command is a thin private wrapper around a plain
+// `pub fn ..._impl` that src/bin/wan_cli.rs (the headless CLI/MCP entrypoint)
+// calls directly via the `wan_monitor_app_lib` rlib.
+
+pub fn measure_now_impl() -> String {
+    let s = measure_sample(MEASURE_NOW_PING_COUNT, MEASURE_NOW_SPEED_PROBE_COUNT);
+    // "Mbps-проба": ping-derived, NOT a real bandwidth measurement — see
+    // routeros::active_throughput_mbps's doc comment for why.
+    let fmt_mbps = |v: Option<f64>| v.map(|v| format!("{}Mbps-проба", v)).unwrap_or_default();
     format!(
-        "{}  LMT={} BITE={}",
+        "{}  LMT={} {} BITE={} {}",
         s.ts,
         s.zte_avg.map(|v| format!("{}мс/{}%", v, s.zte_loss)).unwrap_or_else(|| "недоступний".into()),
+        fmt_mbps(s.zte_active_mbps),
         s.soyea_avg.map(|v| format!("{}мс/{}%", v, s.soyea_loss)).unwrap_or_else(|| "недоступний".into()),
+        fmt_mbps(s.soyea_active_mbps),
     )
 }
 
 #[tauri::command]
-fn read_wan_speed() -> Result<String, String> {
+fn measure_now() -> String {
+    measure_now_impl()
+}
+
+pub fn read_wan_speed_impl() -> Result<String, String> {
     let mut api = connect_and_login(Duration::from_secs(10))?;
     let (zte_rx, zte_tx, soyea_rx, soyea_tx) = read_traffic(&mut api);
     let mut obj = serde_json::json!({ "ts": now_iso() });
@@ -109,7 +127,11 @@ fn read_wan_speed() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn toggle_wan(channel: String, on: bool) -> Result<String, String> {
+fn read_wan_speed() -> Result<String, String> {
+    read_wan_speed_impl()
+}
+
+pub fn toggle_wan_impl(channel: String, on: bool) -> Result<String, String> {
     let prefix = match channel.as_str() {
         "zte" => "1",
         "soyea" => "2",
@@ -119,6 +141,11 @@ fn toggle_wan(channel: String, on: bool) -> Result<String, String> {
     let n = set_wan_routes(&mut api, prefix, on);
     let action = if on { "увімкнено" } else { "вимкнено вручну" };
     Ok(format!("{}: {} ({} маршрутів)", channel, action, n))
+}
+
+#[tauri::command]
+fn toggle_wan(channel: String, on: bool) -> Result<String, String> {
+    toggle_wan_impl(channel, on)
 }
 
 // ---------- лог роутера (netwatch flap-події) ----------
@@ -180,8 +207,7 @@ fn flap_re() -> &'static Regex {
     })
 }
 
-#[tauri::command]
-fn read_router_log() -> Result<String, String> {
+pub fn read_router_log_impl() -> Result<String, String> {
     let mut api = connect_and_login(Duration::from_secs(20))?;
 
     let mut netwatch = Vec::new();
@@ -272,6 +298,11 @@ fn read_router_log() -> Result<String, String> {
     serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn read_router_log() -> Result<String, String> {
+    read_router_log_impl()
+}
+
 // ---------- відновлення конфігурації failover (recovery) ----------
 
 fn add_route(api: &mut routeros::ApiRos, comment: &str, gw: &str, dist: u32, table: Option<&str>, dst: &str, extra: &[&str]) {
@@ -329,8 +360,7 @@ fn test_wan_alive(api: &mut routeros::ApiRos, gwip: &str) -> u32 {
     rec
 }
 
-#[tauri::command]
-fn restore_failover_config() -> Result<String, String> {
+pub fn restore_failover_config_impl() -> Result<String, String> {
     let mut out = String::new();
     macro_rules! log {
         ($($arg:tt)*) => {{ out.push_str(&format!($($arg)*)); out.push('\n'); }};
@@ -489,6 +519,11 @@ fn restore_failover_config() -> Result<String, String> {
 
     log!("\n✅ Готово.");
     Ok(out)
+}
+
+#[tauri::command]
+fn restore_failover_config() -> Result<String, String> {
+    restore_failover_config_impl()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

@@ -292,8 +292,50 @@ fn remove_by_comment(api: &mut ApiRos, print_cmd: &str, remove_cmd: &str, tag: &
     }
 }
 
-/// Ping via a temporary /32 route pinned to `gw`, then remove the route. Returns (avg_ms, max_ms, loss_pct).
-pub fn ping_via_gw(api: &mut ApiRos, probe_ip: &str, gw: &str, count: u32) -> (Option<f64>, Option<f64>, f64) {
+/// Result of probing one WAN channel: latency/loss plus a rough active
+/// throughput proxy (see `active_throughput_mbps`).
+pub struct ChannelProbe {
+    pub avg_ms: Option<f64>,
+    pub loss_pct: f64,
+    pub active_mbps: Option<f64>,
+}
+
+/// Best-effort Mbps estimate from a burst of max-size ICMP packets, timed
+/// end-to-end in Rust. This exists because RouterOS's real tools for this
+/// (`/tool/fetch`, `/tool/bandwidth-test`) are disabled by this router's
+/// `device-mode=home` security policy (confirmed via `/system/device-mode/print`
+/// — `fetch=false`, `bandwidth-test=false` — lifting it requires physically
+/// pressing the router's reset button, not something doable over the API).
+/// A ping burst is not a real bandwidth test — no window scaling, no
+/// sustained saturation — but it gives an active, comparable number for a
+/// channel that carries no real traffic (e.g. BITE while LMT is primary),
+/// unlike passively reading `/interface/monitor-traffic`.
+const SPEED_PROBE_PACKET_SIZE: u32 = 1472; // max ICMP payload before fragmentation on a 1500 MTU link
+const SPEED_PROBE_INTERVAL: &str = "100ms";
+
+fn active_throughput_mbps(api: &mut ApiRos, probe_ip: &str, count: u32) -> Option<f64> {
+    let start = std::time::Instant::now();
+    let result = api.talk(&[
+        "/ping",
+        &format!("=address={}", probe_ip),
+        &format!("=count={}", count),
+        &format!("=size={}", SPEED_PROBE_PACKET_SIZE),
+        &format!("=interval={}", SPEED_PROBE_INTERVAL),
+    ]);
+    let elapsed = start.elapsed().as_secs_f64();
+    let rows = result.ok()?;
+    let (_, attrs) = rows.into_iter().filter(|(r, _)| r == "!re").last()?;
+    let received: u32 = attrs.get("=received").and_then(|v| v.parse().ok())?;
+    if received == 0 || elapsed <= 0.0 {
+        return None;
+    }
+    let bits = received as f64 * SPEED_PROBE_PACKET_SIZE as f64 * 8.0;
+    Some((bits / elapsed / 1e6 * 100.0).round() / 100.0)
+}
+
+/// Latency/loss ping plus the active-throughput probe, sharing one temporary
+/// /32 route pinned to `gw` so the channel is only touched once per cycle.
+pub fn probe_channel(api: &mut ApiRos, probe_ip: &str, gw: &str, latency_count: u32, speed_count: u32) -> ChannelProbe {
     let tag = tag_for(probe_ip);
     remove_by_comment(api, "/ip/route/print", "/ip/route/remove", &tag);
     let _ = api.talk(&[
@@ -304,25 +346,23 @@ pub fn ping_via_gw(api: &mut ApiRos, probe_ip: &str, gw: &str, count: u32) -> (O
     ]);
     std::thread::sleep(Duration::from_millis(500));
 
-    let result = api.talk(&["/ping", &format!("=address={}", probe_ip), &format!("=count={}", count)]);
-    let out = match result {
-        Ok(rows) => {
-            let last = rows.into_iter().filter(|(r, _)| r == "!re").last();
-            match last {
-                Some((_, attrs)) => {
-                    let avg = attrs.get("=avg-rtt").and_then(|v| parse_rtt(v));
-                    let mx = attrs.get("=max-rtt").and_then(|v| parse_rtt(v));
-                    let loss = attrs.get("=packet-loss").and_then(|v| v.parse::<f64>().ok()).unwrap_or(100.0);
-                    (avg, mx, loss)
-                }
-                None => (None, None, 100.0),
-            }
-        }
-        Err(_) => (None, None, 100.0),
+    let (avg_ms, loss_pct) = match api.talk(&["/ping", &format!("=address={}", probe_ip), &format!("=count={}", latency_count)]) {
+        Ok(rows) => match rows.into_iter().filter(|(r, _)| r == "!re").last() {
+            Some((_, attrs)) => (
+                attrs.get("=avg-rtt").and_then(|v| parse_rtt(v)),
+                attrs.get("=packet-loss").and_then(|v| v.parse::<f64>().ok()).unwrap_or(100.0),
+            ),
+            None => (None, 100.0),
+        },
+        Err(_) => (None, 100.0),
     };
 
+    // Skip the (slower) throughput leg if the channel is already down — no point
+    // saturating a dead link's retry budget for a number that'll be None anyway.
+    let active_mbps = if loss_pct < 50.0 { active_throughput_mbps(api, probe_ip, speed_count) } else { None };
+
     remove_by_comment(api, "/ip/route/print", "/ip/route/remove", &tag);
-    out
+    ChannelProbe { avg_ms, loss_pct, active_mbps }
 }
 
 /// LMT (WAN1) gateway from ether3, BITE (WAN2) gateway from ether1.

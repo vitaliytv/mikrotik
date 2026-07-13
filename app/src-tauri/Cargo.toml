@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+# Two [[bin]] targets now exist (the GUI app + the headless wan_cli used by
+# the Node MCP entrypoint) — without this, `cargo run` (which `tauri dev`
+# invokes) can't pick one automatically.
+default-run = "wan-monitor-app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

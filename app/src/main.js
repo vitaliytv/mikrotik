@@ -103,6 +103,8 @@ function onWanSample(sample) {
     zteTx: toMbps(sample.zte_tx_bps),
     soyeaRx: toMbps(sample.soyea_rx_bps),
     soyeaTx: toMbps(sample.soyea_tx_bps),
+    zteActiveMbps: sample.zte_active_mbps,
+    soyeaActiveMbps: sample.soyea_active_mbps,
   });
   if (liveSamples.length > LIVE_MAX_POINTS) liveSamples.shift();
   renderLiveCharts();
@@ -128,10 +130,12 @@ function fmtMbps(v) {
 
 function speedDatasets() {
   return [
-    { key: "zteRx", label: "LMT ↓", borderColor: "#60a5fa", backgroundColor: "#60a5fa22", fill: true },
-    { key: "zteTx", label: "LMT ↑", borderColor: "#60a5fa", borderDash: [5, 4], fill: false },
-    { key: "soyeaRx", label: "BITE ↓", borderColor: "#34d399", backgroundColor: "#34d39922", fill: true },
-    { key: "soyeaTx", label: "BITE ↑", borderColor: "#34d399", borderDash: [5, 4], fill: false },
+    { key: "zteRx", label: "LMT ↓ (реальний)", borderColor: "#60a5fa", backgroundColor: "#60a5fa22", fill: true },
+    { key: "zteTx", label: "LMT ↑ (реальний)", borderColor: "#60a5fa", borderDash: [5, 4], fill: false },
+    { key: "soyeaRx", label: "BITE ↓ (реальний)", borderColor: "#34d399", backgroundColor: "#34d39922", fill: true },
+    { key: "soyeaTx", label: "BITE ↑ (реальний)", borderColor: "#34d399", borderDash: [5, 4], fill: false },
+    { key: "zteActiveMbps", label: "LMT (пінг-проба, не пропускна здатність)", borderColor: "#f87171", borderDash: [2, 2], fill: false },
+    { key: "soyeaActiveMbps", label: "BITE (пінг-проба, не пропускна здатність)", borderColor: "#fb923c", borderDash: [2, 2], fill: false },
   ];
 }
 
