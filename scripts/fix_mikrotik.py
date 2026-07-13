@@ -24,7 +24,7 @@ USER = os.environ.get("MIKROTIK_USER") or _ENV_FILE.get("MIKROTIK_USER", "admin"
 PW   = os.environ.get("MIKROTIK_PASS") or _ENV_FILE.get("MIKROTIK_PASS")
 if not PW:
     raise SystemExit("MIKROTIK_PASS не задано. Створи ~/.mikrotik.env з MIKROTIK_PASS=... або встанови env-змінну.")
-PROBE1, PROBE2 = "8.8.8.8", "1.1.1.1"   # 8.8.8.8 тест через WAN1(LMT), 1.1.1.1 через WAN2(BITE)
+PROBE1, PROBE2 = "212.93.105.242", "84.15.67.179"   # стабільні хости на межі мереж LMT(WAN1) і BITE(WAN2)
 
 class ApiRos:
     def __init__(self, sk): self.sk=sk
