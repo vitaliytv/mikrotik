@@ -2,7 +2,8 @@ mod routeros;
 
 use regex::Regex;
 use routeros::{
-    channel_for_host, connect_and_login, get_gateways, ping_via_gw, set_wan_routes, PROBE_SOYEA, PROBE_ZTE,
+    channel_for_host, connect_and_login, get_gateways, ping_via_gw, read_traffic, set_wan_routes, PROBE_SOYEA,
+    PROBE_ZTE,
 };
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -20,6 +21,10 @@ struct WanSample {
     zte_loss: f64,
     soyea_avg: Option<f64>,
     soyea_loss: f64,
+    zte_rx_bps: Option<i64>,
+    zte_tx_bps: Option<i64>,
+    soyea_rx_bps: Option<i64>,
+    soyea_tx_bps: Option<i64>,
 }
 
 fn now_iso() -> String {
@@ -39,9 +44,30 @@ fn measure_sample(ping_count: u32) -> WanSample {
                 Some(gw) => ping_via_gw(&mut api, PROBE_SOYEA, &gw, ping_count),
                 None => (None, None, 100.0),
             };
-            WanSample { ts, zte_avg, zte_loss, soyea_avg, soyea_loss }
+            let (zte_rx_bps, zte_tx_bps, soyea_rx_bps, soyea_tx_bps) = read_traffic(&mut api);
+            WanSample {
+                ts,
+                zte_avg,
+                zte_loss,
+                soyea_avg,
+                soyea_loss,
+                zte_rx_bps,
+                zte_tx_bps,
+                soyea_rx_bps,
+                soyea_tx_bps,
+            }
         }
-        Err(_) => WanSample { ts, zte_avg: None, zte_loss: 100.0, soyea_avg: None, soyea_loss: 100.0 },
+        Err(_) => WanSample {
+            ts,
+            zte_avg: None,
+            zte_loss: 100.0,
+            soyea_avg: None,
+            soyea_loss: 100.0,
+            zte_rx_bps: None,
+            zte_tx_bps: None,
+            soyea_rx_bps: None,
+            soyea_tx_bps: None,
+        },
     }
 }
 
@@ -71,28 +97,12 @@ fn measure_now() -> String {
 #[tauri::command]
 fn read_wan_speed() -> Result<String, String> {
     let mut api = connect_and_login(Duration::from_secs(10))?;
-    let rows = api
-        .talk(&["/interface/monitor-traffic", "=interface=ether1,ether3", "=once="])
-        .map_err(|e| e.to_string())?;
-    let mut zte = None;
-    let mut soyea = None;
-    for (r, attrs) in rows {
-        if r != "!re" {
-            continue;
-        }
-        let rx = attrs.get("=rx-bits-per-second").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-        let tx = attrs.get("=tx-bits-per-second").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-        match attrs.get("=name").map(|s| s.as_str()) {
-            Some("ether3") => zte = Some((rx, tx)),
-            Some("ether1") => soyea = Some((rx, tx)),
-            _ => {}
-        }
-    }
+    let (zte_rx, zte_tx, soyea_rx, soyea_tx) = read_traffic(&mut api);
     let mut obj = serde_json::json!({ "ts": now_iso() });
-    if let Some((rx, tx)) = zte {
+    if let (Some(rx), Some(tx)) = (zte_rx, zte_tx) {
         obj["zte"] = serde_json::json!({ "rx_bps": rx, "tx_bps": tx });
     }
-    if let Some((rx, tx)) = soyea {
+    if let (Some(rx), Some(tx)) = (soyea_rx, soyea_tx) {
         obj["soyea"] = serde_json::json!({ "rx_bps": rx, "tx_bps": tx });
     }
     Ok(obj.to_string())

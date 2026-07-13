@@ -371,6 +371,27 @@ pub fn set_wan_routes(api: &mut ApiRos, prefix: &str, enabled: bool) -> u32 {
     count
 }
 
+/// Instant rx/tx bits-per-second for both WAN interfaces: (zte_rx, zte_tx, soyea_rx, soyea_tx).
+pub fn read_traffic(api: &mut ApiRos) -> (Option<i64>, Option<i64>, Option<i64>, Option<i64>) {
+    let mut zte = None;
+    let mut soyea = None;
+    if let Ok(rows) = api.talk(&["/interface/monitor-traffic", "=interface=ether1,ether3", "=once="]) {
+        for (r, attrs) in rows {
+            if r != "!re" {
+                continue;
+            }
+            let rx = attrs.get("=rx-bits-per-second").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+            let tx = attrs.get("=tx-bits-per-second").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+            match attrs.get("=name").map(|s| s.as_str()) {
+                Some("ether3") => zte = Some((rx, tx)),
+                Some("ether1") => soyea = Some((rx, tx)),
+                _ => {}
+            }
+        }
+    }
+    (zte.map(|(rx, _)| rx), zte.map(|(_, tx)| tx), soyea.map(|(rx, _)| rx), soyea.map(|(_, tx)| tx))
+}
+
 pub fn channel_for_host(host: &str) -> &'static str {
     if host == PROBE_ZTE {
         "zte"

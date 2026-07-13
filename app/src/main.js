@@ -8,10 +8,9 @@ Chart.register(window["chartjs-plugin-annotation"]);
 const LIVE_MAX_POINTS = 240; // 240 * 15с ≈ 1 година в пам'яті, поки застосунок відкритий
 
 let rttChart, lossChart, flapsChart, speedChart;
-let liveSamples = []; // {ts: Date, zteAvg, zteLoss, soyeaAvg, soyeaLoss} — тільки в пам'яті, без persist
+let liveSamples = []; // {ts, zteAvg, zteLoss, soyeaAvg, soyeaLoss, zteRx, zteTx, soyeaRx, soyeaTx} — тільки в пам'яті, без persist
 let flapEvents = []; // {ts: Date, time, channel, action}
 let netwatchCache = [];
-let speedSamples = []; // {t: epoch_ms, zteRx, zteTx, soyeaRx, soyeaTx} — Mbps
 let rawLogCache = []; // {time, topics, message}
 
 const statusEl = () => document.querySelector("#status");
@@ -89,6 +88,10 @@ function renderLiveCharts() {
   }
 }
 
+function toMbps(bps) {
+  return bps == null ? null : Math.round((bps / 1e6) * 100) / 100;
+}
+
 function onWanSample(sample) {
   liveSamples.push({
     ts: new Date(sample.ts),
@@ -96,9 +99,14 @@ function onWanSample(sample) {
     zteLoss: sample.zte_loss,
     soyeaAvg: sample.soyea_avg,
     soyeaLoss: sample.soyea_loss,
+    zteRx: toMbps(sample.zte_rx_bps),
+    zteTx: toMbps(sample.zte_tx_bps),
+    soyeaRx: toMbps(sample.soyea_rx_bps),
+    soyeaTx: toMbps(sample.soyea_tx_bps),
   });
   if (liveSamples.length > LIVE_MAX_POINTS) liveSamples.shift();
   renderLiveCharts();
+  renderSpeedChart();
 }
 
 async function measureNow() {
@@ -111,21 +119,7 @@ async function measureNow() {
   }
 }
 
-// ---------- швидкість ----------
-
-const SPEED_POLL_MS = 5000;
-const SPEED_WINDOW_MS = 30 * 60 * 1000; // тримаємо останні 30 хв
-const SPEED_STORE_KEY = "speedSamples";
-
-function loadSpeedSamples() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(SPEED_STORE_KEY) || "[]");
-    const cutoff = Date.now() - SPEED_WINDOW_MS;
-    speedSamples = raw.filter((s) => s.t >= cutoff);
-  } catch {
-    speedSamples = [];
-  }
-}
+// ---------- швидкість (той самий live-потік, що й RTT/loss) ----------
 
 function fmtMbps(v) {
   if (v == null) return "?";
@@ -148,8 +142,8 @@ function channelActive(chan) {
 
 function renderSpeedChart() {
   const mode = document.querySelector("#speed-mode").value;
-  const labels = speedSamples.map((s) => fmtClock(new Date(s.t)));
-  const n = speedSamples.length;
+  const labels = liveSamples.map((s) => fmtClock(s.ts));
+  const n = liveSamples.length;
 
   const datasets = speedDatasets()
     .filter((d) => {
@@ -158,7 +152,7 @@ function renderSpeedChart() {
     })
     .map((d) => ({
       label: d.label + (channelActive(d.key.startsWith("zte") ? "zte" : "soyea") ? "" : " (вимкнено)"),
-      data: speedSamples.map((s) => s[d.key]),
+      data: liveSamples.map((s) => s[d.key]),
       borderColor: d.borderColor,
       backgroundColor: d.backgroundColor,
       borderDash: d.borderDash,
@@ -173,59 +167,37 @@ function renderSpeedChart() {
     speedChart.data.datasets = datasets;
     speedChart.options.elements.point.radius = n > 100 ? 0 : 2;
     speedChart.update("none");
-    return;
+  } else {
+    speedChart = new Chart(document.getElementById("speed"), {
+      type: "line",
+      data: { labels, datasets },
+      options: {
+        animation: false,
+        plugins: {
+          title: { display: true, text: "Швидкість WAN, Mbps — кожні 15с", color: "#7dd3fc", font: { size: 14 } },
+          legend: { labels: { color: "#ccc" } },
+        },
+        scales: {
+          x: { ticks: { color: "#888", maxTicksLimit: 12, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
+          y: {
+            beginAtZero: true,
+            ticks: { color: "#ccc" },
+            grid: { color: "#2a2a3e" },
+            title: { display: true, text: "Mbps", color: "#aaa" },
+          },
+        },
+        elements: { point: { radius: n > 100 ? 0 : 2 } },
+      },
+    });
   }
 
-  speedChart = new Chart(document.getElementById("speed"), {
-    type: "line",
-    data: { labels, datasets },
-    options: {
-      animation: false,
-      plugins: {
-        title: { display: true, text: "Швидкість WAN, Mbps (останні 30 хв)", color: "#7dd3fc", font: { size: 14 } },
-        legend: { labels: { color: "#ccc" } },
-      },
-      scales: {
-        x: { ticks: { color: "#888", maxTicksLimit: 12, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
-        y: {
-          beginAtZero: true,
-          ticks: { color: "#ccc" },
-          grid: { color: "#2a2a3e" },
-          title: { display: true, text: "Mbps", color: "#aaa" },
-        },
-      },
-      elements: { point: { radius: n > 100 ? 0 : 2 } },
-    },
-  });
-}
-
-async function pollSpeed() {
-  try {
-    const raw = await invoke("read_wan_speed");
-    const data = JSON.parse(raw);
-    if (data.error) {
-      speedStatusEl().textContent = `Помилка: ${data.error}`;
-      return;
-    }
-    const toMbps = (bps) => Math.round((bps / 1e6) * 100) / 100;
-    speedSamples.push({
-      t: Date.now(),
-      zteRx: data.zte ? toMbps(data.zte.rx_bps) : null,
-      zteTx: data.zte ? toMbps(data.zte.tx_bps) : null,
-      soyeaRx: data.soyea ? toMbps(data.soyea.rx_bps) : null,
-      soyeaTx: data.soyea ? toMbps(data.soyea.tx_bps) : null,
-    });
-    const cutoff = Date.now() - SPEED_WINDOW_MS;
-    speedSamples = speedSamples.filter((s) => s.t >= cutoff);
-    localStorage.setItem(SPEED_STORE_KEY, JSON.stringify(speedSamples));
-    renderSpeedChart();
-
-    const last = speedSamples[speedSamples.length - 1];
+  const last = liveSamples[liveSamples.length - 1];
+  if (last) {
     speedStatusEl().textContent =
       `LMT ↓${fmtMbps(last.zteRx)} ↑${fmtMbps(last.zteTx)} | ` +
       `BITE ↓${fmtMbps(last.soyeaRx)} ↑${fmtMbps(last.soyeaTx)} Mbps`;
-  } catch (e) {
-    speedStatusEl().textContent = `Помилка: ${e}`;
+  } else {
+    speedStatusEl().textContent = "Очікую перший вимір (до 15с)...";
   }
 }
 
@@ -441,7 +413,6 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("raw-log-filter").addEventListener("input", renderRawLog);
   document.querySelector("#speed-mode").addEventListener("change", renderSpeedChart);
 
-  loadSpeedSamples();
   renderSpeedChart();
   renderLiveCharts();
 
@@ -459,7 +430,5 @@ window.addEventListener("DOMContentLoaded", () => {
   listen("wan-sample", (event) => onWanSample(event.payload));
 
   loadRouterLog();
-  pollSpeed();
   setInterval(loadRouterLog, 60000);
-  setInterval(pollSpeed, SPEED_POLL_MS);
 });
