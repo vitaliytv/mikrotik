@@ -8,13 +8,15 @@ const RTT_AVG_BAD = 150;
 const RTT_MAX_BAD = 160;
 const RTT_AVG_GOOD = 100;
 
-let rttChart, lossChart, flapsChart;
+let rttChart, lossChart, flapsChart, speedChart;
 let csvRows = []; // {ts: Date, zteAvg, zteLoss, zteActive, soyeaAvg, soyeaLoss, soyeaActive}
 let flapEvents = []; // {ts: Date, time, channel, action}
 let netwatchCache = [];
+let speedSamples = []; // {t: epoch_ms, zteRx, zteTx, soyeaRx, soyeaTx} — Mbps
 
 const statusEl = () => document.querySelector("#status");
 const routerStatusEl = () => document.querySelector("#router-status");
+const speedStatusEl = () => document.querySelector("#speed-status");
 
 // ---------- період ----------
 
@@ -188,6 +190,131 @@ async function measureNow() {
     statusEl().textContent = `Помилка: ${e}`;
   }
   await loadCsv();
+}
+
+// ---------- швидкість ----------
+
+const SPEED_POLL_MS = 5000;
+const SPEED_WINDOW_MS = 30 * 60 * 1000; // тримаємо останні 30 хв
+const SPEED_STORE_KEY = "speedSamples";
+
+function loadSpeedSamples() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SPEED_STORE_KEY) || "[]");
+    const cutoff = Date.now() - SPEED_WINDOW_MS;
+    speedSamples = raw.filter((s) => s.t >= cutoff);
+  } catch {
+    speedSamples = [];
+  }
+}
+
+function fmtTime(ms) {
+  const d = new Date(ms);
+  const pad = (x) => String(x).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function fmtMbps(v) {
+  if (v == null) return "?";
+  return v >= 100 ? Math.round(v) : v.toFixed(1);
+}
+
+function speedDatasets() {
+  return [
+    { key: "zteRx", label: "ZTE ↓", borderColor: "#60a5fa", backgroundColor: "#60a5fa22", fill: true },
+    { key: "zteTx", label: "ZTE ↑", borderColor: "#60a5fa", borderDash: [5, 4], fill: false },
+    { key: "soyeaRx", label: "Soyea ↓", borderColor: "#34d399", backgroundColor: "#34d39922", fill: true },
+    { key: "soyeaTx", label: "Soyea ↑", borderColor: "#34d399", borderDash: [5, 4], fill: false },
+  ];
+}
+
+function channelActive(chan) {
+  if (!csvRows.length) return true;
+  const last = csvRows[csvRows.length - 1];
+  return chan === "zte" ? last.zteActive === 1 : last.soyeaActive === 1;
+}
+
+function renderSpeedChart() {
+  const mode = document.querySelector("#speed-mode").value;
+  const labels = speedSamples.map((s) => fmtTime(s.t));
+  const n = speedSamples.length;
+
+  const datasets = speedDatasets()
+    .filter((d) => {
+      if (mode !== "active") return true;
+      return channelActive(d.key.startsWith("zte") ? "zte" : "soyea");
+    })
+    .map((d) => ({
+      label: d.label + (channelActive(d.key.startsWith("zte") ? "zte" : "soyea") ? "" : " (вимкнено)"),
+      data: speedSamples.map((s) => s[d.key]),
+      borderColor: d.borderColor,
+      backgroundColor: d.backgroundColor,
+      borderDash: d.borderDash,
+      fill: d.fill,
+      tension: 0.3,
+      borderWidth: 1.5,
+      spanGaps: true,
+    }));
+
+  if (speedChart) {
+    speedChart.data.labels = labels;
+    speedChart.data.datasets = datasets;
+    speedChart.options.elements.point.radius = n > 100 ? 0 : 2;
+    speedChart.update("none");
+    return;
+  }
+
+  speedChart = new Chart(document.getElementById("speed"), {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      animation: false,
+      plugins: {
+        title: { display: true, text: "Швидкість WAN, Mbps (останні 30 хв)", color: "#7dd3fc", font: { size: 14 } },
+        legend: { labels: { color: "#ccc" } },
+      },
+      scales: {
+        x: { ticks: { color: "#888", maxTicksLimit: 12, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
+        y: {
+          beginAtZero: true,
+          ticks: { color: "#ccc" },
+          grid: { color: "#2a2a3e" },
+          title: { display: true, text: "Mbps", color: "#aaa" },
+        },
+      },
+      elements: { point: { radius: n > 100 ? 0 : 2 } },
+    },
+  });
+}
+
+async function pollSpeed() {
+  try {
+    const raw = await invoke("read_wan_speed");
+    const data = JSON.parse(raw);
+    if (data.error) {
+      speedStatusEl().textContent = `Помилка: ${data.error}`;
+      return;
+    }
+    const toMbps = (bps) => Math.round((bps / 1e6) * 100) / 100;
+    speedSamples.push({
+      t: Date.now(),
+      zteRx: data.zte ? toMbps(data.zte.rx_bps) : null,
+      zteTx: data.zte ? toMbps(data.zte.tx_bps) : null,
+      soyeaRx: data.soyea ? toMbps(data.soyea.rx_bps) : null,
+      soyeaTx: data.soyea ? toMbps(data.soyea.tx_bps) : null,
+    });
+    const cutoff = Date.now() - SPEED_WINDOW_MS;
+    speedSamples = speedSamples.filter((s) => s.t >= cutoff);
+    localStorage.setItem(SPEED_STORE_KEY, JSON.stringify(speedSamples));
+    renderSpeedChart();
+
+    const last = speedSamples[speedSamples.length - 1];
+    speedStatusEl().textContent =
+      `ZTE ↓${fmtMbps(last.zteRx)} ↑${fmtMbps(last.zteTx)} | ` +
+      `Soyea ↓${fmtMbps(last.soyeaRx)} ↑${fmtMbps(last.soyeaTx)} Mbps`;
+  } catch (e) {
+    speedStatusEl().textContent = `Помилка: ${e}`;
+  }
 }
 
 // ---------- лог роутера ----------
@@ -385,6 +512,10 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#range-from").value = toLocalInputValue(threeHoursAgo);
   document.querySelector("#range-to").value = toLocalInputValue(now);
   document.querySelector("#apply-range").addEventListener("click", renderAll);
+  document.querySelector("#speed-mode").addEventListener("change", renderSpeedChart);
+
+  loadSpeedSamples();
+  renderSpeedChart();
 
   document.getElementById("agent-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -399,6 +530,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   loadCsv();
   loadRouterLog();
+  pollSpeed();
   setInterval(loadCsv, 30000);
   setInterval(loadRouterLog, 60000);
+  setInterval(pollSpeed, SPEED_POLL_MS);
 });

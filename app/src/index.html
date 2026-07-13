@@ -34,6 +34,21 @@
     </div>
 
     <header style="margin-top:28px">
+      <h1>Швидкість (живий графік)</h1>
+      <div class="controls">
+        <label for="speed-mode">Канали:</label>
+        <select id="speed-mode">
+          <option value="both" selected>Обидва</option>
+          <option value="active">Тільки активні</option>
+        </select>
+        <span id="speed-status">—</span>
+      </div>
+    </header>
+    <div class="charts">
+      <div class="box"><canvas id="speed"></canvas></div>
+    </div>
+
+    <header style="margin-top:28px">
       <h1>Лог роутера (netwatch flap-події)</h1>
       <div class="controls">
         <span id="router-status">—</span>

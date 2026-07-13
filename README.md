@@ -23,6 +23,9 @@ MIKROTIK_PASS=твій_пароль
   ```
   */3 * * * * /usr/bin/python3 ~/wan_monitor.py >> ~/wan_monitor.log 2>&1
   ```
+- `wan_speed.py` — миттєва швидкість обох WAN-інтерфейсів (rx/tx bps) через
+  `/interface/monitor-traffic`. Використовується десктопним застосунком для
+  живого графіка швидкості.
 - `wan_chart.py` — генерує HTML-графік (Chart.js) з `~/wan_log.csv`.
 - `fix_mikrotik.py` — відновлює маршрути/netwatch після втрати конфігурації
   (запускати вручну, коли підключений напряму до роутера).
@@ -39,6 +42,6 @@ bun run tauri dev     # запуск у dev-режимі
 bun run tauri build    # зібрати .app / .dmg
 ```
 
-Застосунок читає `~/wan_log.csv` і запускає `~/wan_monitor.py` напряму —
-тому файли `scripts/wan_monitor.py` мають бути встановлені в `~/` на Mac,
-що керує роутером.
+Застосунок читає `~/wan_log.csv` і запускає `~/wan_monitor.py`,
+`~/wan_router_log.py` та `~/wan_speed.py` напряму — тому ці скрипти зі
+`scripts/` мають бути встановлені в `~/` на Mac, що керує роутером.
