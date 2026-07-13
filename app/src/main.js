@@ -412,7 +412,10 @@ window.addEventListener("DOMContentLoaded", () => {
     document.getElementById("toggle-raw-log").textContent = box.hidden
       ? "Показати лог MikroTik"
       : "Сховати лог MikroTik";
-    if (!box.hidden) renderRawLog();
+    // Force a fresh fetch on open instead of rendering whatever's cached —
+    // otherwise opening it right after launch (before the first 60s tick)
+    // shows a stale/empty "0 рядків".
+    if (!box.hidden) loadRouterLog();
   });
   document.getElementById("raw-log-filter").addEventListener("input", renderRawLog);
   document.querySelector("#speed-mode").addEventListener("change", renderSpeedChart);

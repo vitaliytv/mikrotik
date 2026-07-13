@@ -2,8 +2,8 @@ mod routeros;
 
 use regex::Regex;
 use routeros::{
-    channel_for_host, connect_and_login, get_gateways, probe_channel, read_traffic, set_wan_routes, PROBE_SOYEA,
-    PROBE_ZTE,
+    channel_for_host, connect_and_login, get_gateways, probe_channel, read_traffic, set_wan_routes, ApiRos,
+    PROBE_SOYEA, PROBE_ZTE,
 };
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -38,52 +38,81 @@ fn now_iso() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
+fn empty_sample(ts: String) -> WanSample {
+    WanSample {
+        ts,
+        zte_avg: None,
+        zte_loss: 100.0,
+        soyea_avg: None,
+        soyea_loss: 100.0,
+        zte_rx_bps: None,
+        zte_tx_bps: None,
+        soyea_rx_bps: None,
+        soyea_tx_bps: None,
+        zte_active_mbps: None,
+        soyea_active_mbps: None,
+    }
+}
+
+fn measure_with_api(api: &mut ApiRos, ts: String, ping_count: u32, speed_count: u32) -> WanSample {
+    let (gw1, gw2) = get_gateways(api);
+    let zte = gw1.map(|gw| probe_channel(api, PROBE_ZTE, &gw, ping_count, speed_count));
+    let soyea = gw2.map(|gw| probe_channel(api, PROBE_SOYEA, &gw, ping_count, speed_count));
+    let (zte_rx_bps, zte_tx_bps, soyea_rx_bps, soyea_tx_bps) = read_traffic(api);
+    WanSample {
+        ts,
+        zte_avg: zte.as_ref().and_then(|c| c.avg_ms),
+        zte_loss: zte.as_ref().map(|c| c.loss_pct).unwrap_or(100.0),
+        soyea_avg: soyea.as_ref().and_then(|c| c.avg_ms),
+        soyea_loss: soyea.as_ref().map(|c| c.loss_pct).unwrap_or(100.0),
+        zte_rx_bps,
+        zte_tx_bps,
+        soyea_rx_bps,
+        soyea_tx_bps,
+        zte_active_mbps: zte.as_ref().and_then(|c| c.active_mbps),
+        soyea_active_mbps: soyea.as_ref().and_then(|c| c.active_mbps),
+    }
+}
+
+/// One-shot measurement with a fresh connection — fine for the infrequent,
+/// user-triggered `measure_now`.
 fn measure_sample(ping_count: u32, speed_count: u32) -> WanSample {
     let ts = now_iso();
     match connect_and_login(Duration::from_secs(8)) {
-        Ok(mut api) => {
-            let (gw1, gw2) = get_gateways(&mut api);
-            let zte = gw1.map(|gw| probe_channel(&mut api, PROBE_ZTE, &gw, ping_count, speed_count));
-            let soyea = gw2.map(|gw| probe_channel(&mut api, PROBE_SOYEA, &gw, ping_count, speed_count));
-            let (zte_rx_bps, zte_tx_bps, soyea_rx_bps, soyea_tx_bps) = read_traffic(&mut api);
-            WanSample {
-                ts,
-                zte_avg: zte.as_ref().and_then(|c| c.avg_ms),
-                zte_loss: zte.as_ref().map(|c| c.loss_pct).unwrap_or(100.0),
-                soyea_avg: soyea.as_ref().and_then(|c| c.avg_ms),
-                soyea_loss: soyea.as_ref().map(|c| c.loss_pct).unwrap_or(100.0),
-                zte_rx_bps,
-                zte_tx_bps,
-                soyea_rx_bps,
-                soyea_tx_bps,
-                zte_active_mbps: zte.as_ref().and_then(|c| c.active_mbps),
-                soyea_active_mbps: soyea.as_ref().and_then(|c| c.active_mbps),
-            }
-        }
-        Err(_) => WanSample {
-            ts,
-            zte_avg: None,
-            zte_loss: 100.0,
-            soyea_avg: None,
-            soyea_loss: 100.0,
-            zte_rx_bps: None,
-            zte_tx_bps: None,
-            soyea_rx_bps: None,
-            soyea_tx_bps: None,
-            zte_active_mbps: None,
-            soyea_active_mbps: None,
-        },
+        Ok(mut api) => measure_with_api(&mut api, ts, ping_count, speed_count),
+        Err(_) => empty_sample(ts),
+    }
+}
+
+/// Measurement for the 15s background loop, reusing `api_slot`'s connection
+/// across cycles instead of reconnecting every time. A fresh reconnect-per-cycle
+/// was flooding the router's own log buffer with login/logout lines (the
+/// majority of its 1000-line default) and crowding out real netwatch events —
+/// this keeps one session open for as long as it stays healthy, and only pays
+/// the reconnect (and its log lines) when the link actually drops.
+fn measure_sample_reuse(api_slot: &mut Option<ApiRos>, ping_count: u32, speed_count: u32) -> WanSample {
+    let ts = now_iso();
+    let alive = api_slot.as_mut().map(|api| api.talk(&["/system/identity/print"]).is_ok()).unwrap_or(false);
+    if !alive {
+        *api_slot = connect_and_login(Duration::from_secs(8)).ok();
+    }
+    match api_slot.as_mut() {
+        Some(api) => measure_with_api(api, ts, ping_count, speed_count),
+        None => empty_sample(ts),
     }
 }
 
 fn start_monitor_thread(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        let start = std::time::Instant::now();
-        let sample = measure_sample(MONITOR_PING_COUNT, MONITOR_SPEED_PROBE_COUNT);
-        let _ = app.emit("wan-sample", &sample);
-        let elapsed = start.elapsed();
-        if elapsed < MONITOR_INTERVAL {
-            std::thread::sleep(MONITOR_INTERVAL - elapsed);
+    std::thread::spawn(move || {
+        let mut api: Option<ApiRos> = None;
+        loop {
+            let start = std::time::Instant::now();
+            let sample = measure_sample_reuse(&mut api, MONITOR_PING_COUNT, MONITOR_SPEED_PROBE_COUNT);
+            let _ = app.emit("wan-sample", &sample);
+            let elapsed = start.elapsed();
+            if elapsed < MONITOR_INTERVAL {
+                std::thread::sleep(MONITOR_INTERVAL - elapsed);
+            }
         }
     });
 }
@@ -200,11 +229,15 @@ struct RouterLogResult {
     log_total_lines: usize,
 }
 
+// Matches netwatch's own summary line ("LBnw2 probe down -> lbController"),
+// not the verbose "route ... changed by netwatch ..." lines — those also
+// carry a `/script:lbController/` segment between host and action that an
+// earlier version of this regex didn't account for, silently dropping every
+// flap. The probe line is simpler and doesn't depend on script/action-id
+// formatting at all.
 fn flap_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"^route .* changed by netwatch:type: icmp, host: ([\d.]+)/action:(\d+) \(.*disabled=(yes|no)"#).unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r"^(LBnw\d+) probe (up|down)").unwrap())
 }
 
 pub fn read_router_log_impl() -> Result<String, String> {
@@ -262,18 +295,22 @@ pub fn read_router_log_impl() -> Result<String, String> {
         let msg = attrs.get("=message").cloned().unwrap_or_default();
         let t = attrs.get("=time").cloned().unwrap_or_default();
         if let Some(caps) = flap_re().captures(&msg) {
-            let host = caps.get(1).unwrap().as_str().to_string();
-            let action_id = caps.get(2).unwrap().as_str().to_string();
-            let disabled = caps.get(3).unwrap().as_str();
-            let key = (t.clone(), action_id);
+            let comment = caps.get(1).unwrap().as_str().to_string(); // "LBnw1" / "LBnw2"
+            let direction = caps.get(2).unwrap().as_str().to_string();
+            let key = (t.clone(), comment.clone(), direction.clone());
             if !seen.insert(key) {
                 continue;
             }
+            let channel = match comment.as_str() {
+                "LBnw1" => "zte",
+                "LBnw2" => "soyea",
+                _ => "?",
+            };
             flap_events.push(FlapEvent {
                 time: t,
-                channel: channel_for_host(&host).to_string(),
-                host,
-                action: if disabled == "yes" { "down".to_string() } else { "up".to_string() },
+                channel: channel.to_string(),
+                host: comment,
+                action: if direction == "down" { "down".to_string() } else { "up".to_string() },
             });
         } else if keywords.iter().any(|k| msg.to_lowercase().contains(k)) {
             other_events.push(OtherEvent { time: t, message: msg });
