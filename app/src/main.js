@@ -6,6 +6,7 @@ const { listen } = window.__TAURI__.event;
 Chart.register(window["chartjs-plugin-annotation"]);
 
 const LIVE_MAX_POINTS = 240; // 240 * 15с ≈ 1 година в пам'яті, поки застосунок відкритий
+const TRAFFIC_AVERAGE_WINDOW = 4; // 4 * 15с = 1 хвилина
 
 let flapsChart, speedChart;
 let liveSamples = []; // Passive interface counters only; history lives in memory while the viewer is open.
@@ -48,6 +49,14 @@ function fmtMbps(v) {
   return v >= 100 ? Math.round(v) : v.toFixed(1);
 }
 
+function movingAverage(values, windowSize = TRAFFIC_AVERAGE_WINDOW) {
+  return values.map((_, index) => {
+    const window = values.slice(Math.max(0, index - windowSize + 1), index + 1).filter((value) => value != null);
+    if (!window.length) return null;
+    return window.reduce((sum, value) => sum + value, 0) / window.length;
+  });
+}
+
 function speedDatasets() {
   return [
     { key: "zteRx", label: "LMT ↓ (реальний)", borderColor: "#60a5fa", backgroundColor: "#60a5fa22", fill: true },
@@ -64,7 +73,7 @@ function renderSpeedChart() {
   const datasets = speedDatasets()
     .map((d) => ({
       label: d.label,
-      data: liveSamples.map((s) => s[d.key]),
+      data: movingAverage(liveSamples.map((s) => s[d.key])),
       borderColor: d.borderColor,
       backgroundColor: d.backgroundColor,
       borderDash: d.borderDash,
@@ -86,7 +95,7 @@ function renderSpeedChart() {
       options: {
         animation: false,
         plugins: {
-          title: { display: true, text: "Фактичний трафік інтерфейсів, Mbps — кожні 15с", color: "#7dd3fc", font: { size: 14 } },
+          title: { display: true, text: "Середній трафік інтерфейсів за 1 хв, Mbps", color: "#7dd3fc", font: { size: 14 } },
           legend: { labels: { color: "#ccc" } },
         },
         scales: {
@@ -105,9 +114,10 @@ function renderSpeedChart() {
 
   const last = liveSamples[liveSamples.length - 1];
   if (last) {
+    const average = (key) => movingAverage(liveSamples.map((sample) => sample[key])).at(-1);
     speedStatusEl().textContent =
-      `LMT ↓${fmtMbps(last.zteRx)} ↑${fmtMbps(last.zteTx)} | ` +
-      `BITE ↓${fmtMbps(last.soyeaRx)} ↑${fmtMbps(last.soyeaTx)} Mbps`;
+      `LMT ↓${fmtMbps(average("zteRx"))} ↑${fmtMbps(average("zteTx"))} | ` +
+      `BITE ↓${fmtMbps(average("soyeaRx"))} ↑${fmtMbps(average("soyeaTx"))} Mbps (середнє за 1 хв)`;
   } else {
     speedStatusEl().textContent = "Очікую перший вимір (до 15с)...";
   }
