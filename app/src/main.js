@@ -1,4 +1,4 @@
-import { requestAgent, respondAgent, approveAgent, hadToolActivity } from "./agent-gateway.js";
+import { requestAgent, respondAgent, hadToolActivity } from "./agent-gateway.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -7,8 +7,8 @@ Chart.register(window["chartjs-plugin-annotation"]);
 
 const LIVE_MAX_POINTS = 240; // 240 * 15с ≈ 1 година в пам'яті, поки застосунок відкритий
 
-let rttChart, lossChart, flapsChart, speedChart;
-let liveSamples = []; // {ts, zteAvg, zteLoss, soyeaAvg, soyeaLoss, zteRx, zteTx, soyeaRx, soyeaTx} — тільки в пам'яті, без persist
+let flapsChart, speedChart;
+let liveSamples = []; // Passive interface counters only; history lives in memory while the viewer is open.
 let flapEvents = []; // {ts: Date, time, channel, action}
 let netwatchCache = [];
 let rawLogCache = []; // {time, topics, message}
@@ -17,75 +17,11 @@ const statusEl = () => document.querySelector("#status");
 const routerStatusEl = () => document.querySelector("#router-status");
 const speedStatusEl = () => document.querySelector("#speed-status");
 
-// ---------- live-моніторинг (RTT + втрати, кожні 15с, поки застосунок запущений) ----------
+// ---------- пасивний моніторинг трафіку (кожні 15с, поки застосунок відкритий) ----------
 
 function fmtClock(d) {
   const pad = (x) => String(x).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
-function baseCfg(title, labels, datasets, yLabel, pointCount) {
-  return {
-    type: "line",
-    data: { labels, datasets },
-    options: {
-      animation: false,
-      plugins: {
-        title: { display: true, text: title, color: "#7dd3fc", font: { size: 14 } },
-        legend: { labels: { color: "#ccc" } },
-      },
-      scales: {
-        x: { ticks: { color: "#888", maxTicksLimit: 20, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
-        y: {
-          ticks: { color: "#ccc" },
-          grid: { color: "#2a2a3e" },
-          title: { display: true, text: yLabel, color: "#aaa" },
-        },
-      },
-      elements: { point: { radius: pointCount > 60 ? 0 : 2 } },
-    },
-  };
-}
-
-function renderLiveCharts() {
-  const labels = liveSamples.map((s) => fmtClock(s.ts));
-  const n = liveSamples.length;
-
-  const rttCfg = baseCfg(
-    "Затримка (ping) мс — кожні 15с — менше краще",
-    labels,
-    [
-      { label: "LMT", data: liveSamples.map((s) => s.zteAvg), borderColor: "#60a5fa", backgroundColor: "#60a5fa22", tension: 0.3, spanGaps: true },
-      { label: "BITE", data: liveSamples.map((s) => s.soyeaAvg), borderColor: "#34d399", backgroundColor: "#34d39922", tension: 0.3, spanGaps: true },
-    ],
-    "мс",
-    n,
-  );
-
-  const lossCfg = baseCfg(
-    "Втрати пакетів % — кожні 15с — менше краще",
-    labels,
-    [
-      { label: "LMT loss%", data: liveSamples.map((s) => s.zteLoss), borderColor: "#f87171", backgroundColor: "#f8717122", tension: 0.3, spanGaps: true },
-      { label: "BITE loss%", data: liveSamples.map((s) => s.soyeaLoss), borderColor: "#fb923c", backgroundColor: "#fb923c22", tension: 0.3, spanGaps: true },
-    ],
-    "%",
-    n,
-  );
-
-  if (rttChart) rttChart.destroy();
-  if (lossChart) lossChart.destroy();
-  rttChart = new Chart(document.getElementById("rtt"), rttCfg);
-  lossChart = new Chart(document.getElementById("loss"), lossCfg);
-
-  const last = liveSamples[liveSamples.length - 1];
-  if (last) {
-    statusEl().textContent =
-      `Точок у пам'яті: ${n} | Останнє: ${fmtClock(last.ts)} ` +
-      `LMT=${last.zteAvg ?? "?"}мс/${last.zteLoss}% BITE=${last.soyeaAvg ?? "?"}мс/${last.soyeaLoss}%`;
-  } else {
-    statusEl().textContent = "Очікую перший вимір (до 15с)...";
-  }
 }
 
 function toMbps(bps) {
@@ -95,33 +31,17 @@ function toMbps(bps) {
 function onWanSample(sample) {
   liveSamples.push({
     ts: new Date(sample.ts),
-    zteAvg: sample.zte_avg,
-    zteLoss: sample.zte_loss,
-    soyeaAvg: sample.soyea_avg,
-    soyeaLoss: sample.soyea_loss,
     zteRx: toMbps(sample.zte_rx_bps),
     zteTx: toMbps(sample.zte_tx_bps),
     soyeaRx: toMbps(sample.soyea_rx_bps),
     soyeaTx: toMbps(sample.soyea_tx_bps),
-    zteActiveMbps: sample.zte_active_mbps,
-    soyeaActiveMbps: sample.soyea_active_mbps,
   });
   if (liveSamples.length > LIVE_MAX_POINTS) liveSamples.shift();
-  renderLiveCharts();
+  statusEl().textContent = `Пасивних точок у пам'яті: ${liveSamples.length} | Оновлено: ${fmtClock(new Date(sample.ts))}`;
   renderSpeedChart();
 }
 
-async function measureNow() {
-  statusEl().textContent = "Виконую позачерговий вимір...";
-  try {
-    const out = await invoke("measure_now");
-    statusEl().textContent = out;
-  } catch (e) {
-    statusEl().textContent = `Помилка: ${e}`;
-  }
-}
-
-// ---------- швидкість (той самий live-потік, що й RTT/loss) ----------
+// ---------- фактичний трафік інтерфейсів ----------
 
 function fmtMbps(v) {
   if (v == null) return "?";
@@ -134,28 +54,16 @@ function speedDatasets() {
     { key: "zteTx", label: "LMT ↑ (реальний)", borderColor: "#60a5fa", borderDash: [5, 4], fill: false },
     { key: "soyeaRx", label: "BITE ↓ (реальний)", borderColor: "#34d399", backgroundColor: "#34d39922", fill: true },
     { key: "soyeaTx", label: "BITE ↑ (реальний)", borderColor: "#34d399", borderDash: [5, 4], fill: false },
-    { key: "zteActiveMbps", label: "LMT (пінг-проба, не пропускна здатність)", borderColor: "#f87171", borderDash: [2, 2], fill: false },
-    { key: "soyeaActiveMbps", label: "BITE (пінг-проба, не пропускна здатність)", borderColor: "#fb923c", borderDash: [2, 2], fill: false },
   ];
 }
 
-function channelActive(chan) {
-  const nw = netwatchCache.find((n) => n.channel === chan);
-  return nw ? nw.status === "up" : true;
-}
-
 function renderSpeedChart() {
-  const mode = document.querySelector("#speed-mode").value;
   const labels = liveSamples.map((s) => fmtClock(s.ts));
   const n = liveSamples.length;
 
   const datasets = speedDatasets()
-    .filter((d) => {
-      if (mode !== "active") return true;
-      return channelActive(d.key.startsWith("zte") ? "zte" : "soyea");
-    })
     .map((d) => ({
-      label: d.label + (channelActive(d.key.startsWith("zte") ? "zte" : "soyea") ? "" : " (вимкнено)"),
+      label: d.label,
       data: liveSamples.map((s) => s[d.key]),
       borderColor: d.borderColor,
       backgroundColor: d.backgroundColor,
@@ -178,7 +86,7 @@ function renderSpeedChart() {
       options: {
         animation: false,
         plugins: {
-          title: { display: true, text: "Швидкість WAN, Mbps — кожні 15с", color: "#7dd3fc", font: { size: 14 } },
+          title: { display: true, text: "Фактичний трафік інтерфейсів, Mbps — кожні 15с", color: "#7dd3fc", font: { size: 14 } },
           legend: { labels: { color: "#ccc" } },
         },
         scales: {
@@ -239,16 +147,14 @@ function renderNetwatchCards(netwatch) {
 
 function renderFlapsChart(events) {
   const buckets = {};
-  for (const ev of events) {
+  for (const ev of events.filter((ev) => ev.channel === "zte")) {
     if (ev.action !== "down") continue; // рахуємо тільки моменти падіння каналу
     const b = hourBucket(ev.ts);
-    buckets[b] = buckets[b] || { zte: 0, soyea: 0 };
-    buckets[b][ev.channel] = (buckets[b][ev.channel] || 0) + 1;
+    buckets[b] = buckets[b] || { zte: 0 };
+    buckets[b].zte = (buckets[b].zte || 0) + 1;
   }
   const labels = Object.keys(buckets).sort();
   const zte = labels.map((l) => buckets[l].zte || 0);
-  const soyea = labels.map((l) => buckets[l].soyea || 0);
-
   if (flapsChart) flapsChart.destroy();
   flapsChart = new Chart(document.getElementById("flaps"), {
     type: "bar",
@@ -256,13 +162,12 @@ function renderFlapsChart(events) {
       labels,
       datasets: [
         { label: "LMT флапи/год", data: zte, backgroundColor: "#f87171" },
-        { label: "BITE флапи/год", data: soyea, backgroundColor: "#fb923c" },
       ],
     },
     options: {
       animation: false,
       plugins: {
-        title: { display: true, text: "Частота netwatch flap-подій по годинах", color: "#7dd3fc", font: { size: 14 } },
+        title: { display: true, text: "Частота LMT failover-подій по годинах", color: "#7dd3fc", font: { size: 14 } },
         legend: { labels: { color: "#ccc" } },
       },
       scales: {
@@ -277,7 +182,7 @@ function renderEventsTable(events) {
   const body = document.getElementById("events-body");
   body.innerHTML = "";
   const nameFor = { zte: "LMT", soyea: "BITE" };
-  const recent = events.slice(-300).reverse();
+  const recent = events.filter((ev) => ev.channel === "zte").slice(-300).reverse();
   for (const ev of recent) {
     const tr = document.createElement("tr");
     tr.className = ev.action;
@@ -313,8 +218,8 @@ async function loadRouterLog() {
     renderFlapsChart(flapEvents);
     renderEventsTable(flapEvents);
     if (!document.getElementById("raw-log-box").hidden) renderRawLog();
-    const downCount = flapEvents.filter((e) => e.action === "down").length;
-    routerStatusEl().textContent = `Проаналізовано ${data.log_total_lines} рядків логу | flap-подій: ${downCount}`;
+    const downCount = flapEvents.filter((e) => e.channel === "zte" && e.action === "down").length;
+    routerStatusEl().textContent = `Проаналізовано ${data.log_total_lines} рядків логу | падінь LMT: ${downCount}`;
   } catch (e) {
     routerStatusEl().textContent = `Помилка: ${e}`;
   }
@@ -337,28 +242,11 @@ function appendAgentMessage(kind, text) {
   agentMessagesEl().scrollTop = agentMessagesEl().scrollHeight;
 }
 
-function showApproval(requestId, pendingApproval) {
-  const box = document.getElementById("agent-approval");
-  const text = document.getElementById("agent-approval-text");
-  box.hidden = false;
-  text.textContent = `Потрібне підтвердження: ${pendingApproval.tool}(${JSON.stringify(pendingApproval.input)})`;
-  box.dataset.requestId = requestId;
-}
-
-function hideApproval() {
-  const box = document.getElementById("agent-approval");
-  box.hidden = true;
-  delete box.dataset.requestId;
-}
-
 function renderAgentResult(result) {
   if (result.error) {
     appendAgentMessage("error", result.error);
   } else if (result.status === "needs_clarification" && result.question) {
     appendAgentMessage("agent", result.question);
-  } else if (result.status === "needs_approval" && result.pendingApproval) {
-    appendAgentMessage("agent", "Потрібне підтвердження людини для деструктивної дії.");
-    showApproval(result.requestId, result.pendingApproval);
   } else if (result.summary) {
     appendAgentMessage("agent", result.summary);
   } else {
@@ -368,7 +256,6 @@ function renderAgentResult(result) {
   lastRequestId = result.requestId ?? lastRequestId;
   lastStatus = result.status;
 
-  if (result.status !== "needs_approval") hideApproval();
   if (hadToolActivity(result)) {
     loadRouterLog();
   }
@@ -391,19 +278,9 @@ async function sendAgentMessage(text) {
   }
 }
 
-async function decideApproval(approve) {
-  const box = document.getElementById("agent-approval");
-  const requestId = box.dataset.requestId;
-  if (!requestId) return;
-  hideApproval();
-  const result = await approveAgent(requestId, approve);
-  renderAgentResult(result);
-}
-
 // ---------- init ----------
 
 window.addEventListener("DOMContentLoaded", () => {
-  document.querySelector("#measure").addEventListener("click", measureNow);
   document.querySelector("#refresh-router").addEventListener("click", loadRouterLog);
 
   document.getElementById("toggle-raw-log").addEventListener("click", () => {
@@ -418,10 +295,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!box.hidden) loadRouterLog();
   });
   document.getElementById("raw-log-filter").addEventListener("input", renderRawLog);
-  document.querySelector("#speed-mode").addEventListener("change", renderSpeedChart);
-
   renderSpeedChart();
-  renderLiveCharts();
 
   document.getElementById("agent-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -431,9 +305,6 @@ window.addEventListener("DOMContentLoaded", () => {
     input.value = "";
     sendAgentMessage(text);
   });
-  document.getElementById("agent-approve").addEventListener("click", () => decideApproval(true));
-  document.getElementById("agent-reject").addEventListener("click", () => decideApproval(false));
-
   listen("wan-sample", (event) => onWanSample(event.payload));
 
   loadRouterLog();

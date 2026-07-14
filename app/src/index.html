@@ -10,25 +10,15 @@
   </head>
   <body>
     <header>
-      <h1>WAN якість: LMT vs BITE (live, кожні 15с)</h1>
+      <h1>WAN Monitor: перегляд стану роутера</h1>
       <div class="controls">
-        <span id="status">—</span>
-        <button id="measure">Виміряти зараз</button>
+        <span id="status">Пасивні показники, без ping-проб</span>
       </div>
     </header>
-    <div class="charts">
-      <div class="box"><canvas id="rtt"></canvas></div>
-      <div class="box"><canvas id="loss"></canvas></div>
-    </div>
 
     <header style="margin-top:28px">
-      <h1>Швидкість (живий графік)</h1>
+      <h1>Трафік на WAN-інтерфейсах</h1>
       <div class="controls">
-        <label for="speed-mode">Канали:</label>
-        <select id="speed-mode">
-          <option value="both" selected>Обидва</option>
-          <option value="active">Тільки активні</option>
-        </select>
         <span id="speed-status">—</span>
       </div>
     </header>
@@ -37,7 +27,7 @@
     </div>
 
     <header style="margin-top:28px">
-      <h1>Лог роутера (netwatch flap-події)</h1>
+      <h1>Журнал failover LMT</h1>
       <div class="controls">
         <span id="router-status">—</span>
         <button id="refresh-router">Оновити лог</button>
@@ -69,13 +59,8 @@
     </header>
     <div class="box agent-panel">
       <div class="agent-messages" id="agent-messages"></div>
-      <div class="agent-approval" id="agent-approval" hidden>
-        <span id="agent-approval-text"></span>
-        <button id="agent-approve">Підтвердити</button>
-        <button id="agent-reject">Відхилити</button>
-      </div>
       <form class="agent-input" id="agent-form">
-        <input type="text" id="agent-text" placeholder="Напр.: виміряй зараз / прочитай стан WAN" autocomplete="off" />
+        <input type="text" id="agent-text" placeholder="Напр.: прочитай стан WAN або покажи журнал LMT" autocomplete="off" />
         <button type="submit" id="agent-send">Надіслати</button>
       </form>
     </div>

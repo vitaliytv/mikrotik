@@ -6,7 +6,6 @@ use md5::{Digest, Md5};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const PROBE_ZTE: &str = "212.93.105.242"; // стабільний хост на межі мережі LMT (WAN1)
@@ -29,7 +28,11 @@ impl ApiRos {
     }
 
     pub fn login(&mut self, user: &str, pass: &str) -> io::Result<bool> {
-        let resp = self.talk(&["/login", &format!("=name={}", user), &format!("=password={}", pass)])?;
+        let resp = self.talk(&[
+            "/login",
+            &format!("=name={}", user),
+            &format!("=password={}", pass),
+        ])?;
         for (reply, attrs) in &resp {
             if reply == "!trap" {
                 return Ok(false);
@@ -62,7 +65,11 @@ impl ApiRos {
             let reply = sentence[0].clone();
             let mut attrs = HashMap::new();
             for word in &sentence[1..] {
-                let key_end = if word.len() > 1 { word[1..].find('=').map(|p| p + 1) } else { None };
+                let key_end = if word.len() > 1 {
+                    word[1..].find('=').map(|p| p + 1)
+                } else {
+                    None
+                };
                 match key_end {
                     Some(j) => {
                         attrs.insert(word[..j].to_string(), word[j + 1..].to_string());
@@ -205,7 +212,10 @@ fn load_env_file() -> HashMap<String, String> {
                 continue;
             }
             if let Some(idx) = line.find('=') {
-                map.insert(line[..idx].trim().to_string(), line[idx + 1..].trim().to_string());
+                map.insert(
+                    line[..idx].trim().to_string(),
+                    line[idx + 1..].trim().to_string(),
+                );
             }
         }
     }
@@ -240,11 +250,13 @@ pub fn connect_and_login(timeout: Duration) -> Result<ApiRos, String> {
 
 // ---------- допоміжні WAN-функції ----------
 
+#[cfg(any())]
 fn rtt_re() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"^(?:(\d+)ms)?(?:(\d+)us)?$").unwrap())
 }
 
+#[cfg(any())]
 pub fn parse_rtt(val: &str) -> Option<f64> {
     let val = val.trim();
     if val.is_empty() || val == "?" {
@@ -253,8 +265,14 @@ pub fn parse_rtt(val: &str) -> Option<f64> {
     let round2 = |v: f64| (v * 100.0).round() / 100.0;
     if let Some(caps) = rtt_re().captures(val) {
         if caps.get(1).is_some() || caps.get(2).is_some() {
-            let ms: f64 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
-            let us: f64 = caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+            let ms: f64 = caps
+                .get(1)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0.0);
+            let us: f64 = caps
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0.0);
             return Some(round2(ms + us / 1000.0));
         }
     }
@@ -270,6 +288,7 @@ pub fn parse_rtt(val: &str) -> Option<f64> {
     val.parse::<f64>().ok().map(|v| round2(v / 1000.0))
 }
 
+#[cfg(any())]
 fn tag_for(probe_ip: &str) -> String {
     let chars: Vec<char> = probe_ip.chars().collect();
     let start = chars.len().saturating_sub(3);
@@ -287,6 +306,7 @@ fn tag_for(probe_ip: &str) -> String {
 /// harmless.
 /// Returns true if the route was just created or its gateway just changed
 /// (i.e. the caller should give it a moment to converge before using it).
+#[cfg(any())]
 fn ensure_probe_route(api: &mut ApiRos, comment: &str, probe_ip: &str, gw: &str) -> bool {
     if let Ok(rows) = api.talk(&["/ip/route/print"]) {
         for (r, attrs) in rows {
@@ -296,7 +316,11 @@ fn ensure_probe_route(api: &mut ApiRos, comment: &str, probe_ip: &str, gw: &str)
             if attrs.get("=comment").map(|s| s.as_str()) == Some(comment) {
                 if attrs.get("=gateway").map(|s| s.as_str()) != Some(gw) {
                     if let Some(id) = attrs.get("=.id") {
-                        let _ = api.talk(&["/ip/route/set", &format!("=.id={}", id), &format!("=gateway={}", gw)]);
+                        let _ = api.talk(&[
+                            "/ip/route/set",
+                            &format!("=.id={}", id),
+                            &format!("=gateway={}", gw),
+                        ]);
                     }
                     return true;
                 }
@@ -315,6 +339,7 @@ fn ensure_probe_route(api: &mut ApiRos, comment: &str, probe_ip: &str, gw: &str)
 
 /// Result of probing one WAN channel: latency/loss plus a rough active
 /// throughput proxy (see `active_throughput_mbps`).
+#[cfg(any())]
 pub struct ChannelProbe {
     pub avg_ms: Option<f64>,
     pub loss_pct: f64,
@@ -331,9 +356,12 @@ pub struct ChannelProbe {
 /// sustained saturation — but it gives an active, comparable number for a
 /// channel that carries no real traffic (e.g. BITE while LMT is primary),
 /// unlike passively reading `/interface/monitor-traffic`.
+#[cfg(any())]
 const SPEED_PROBE_PACKET_SIZE: u32 = 1472; // max ICMP payload before fragmentation on a 1500 MTU link
+#[cfg(any())]
 const SPEED_PROBE_INTERVAL: &str = "100ms";
 
+#[cfg(any())]
 fn active_throughput_mbps(api: &mut ApiRos, probe_ip: &str, count: u32) -> Option<f64> {
     let start = std::time::Instant::now();
     let result = api.talk(&[
@@ -357,16 +385,30 @@ fn active_throughput_mbps(api: &mut ApiRos, probe_ip: &str, count: u32) -> Optio
 /// Latency/loss ping plus the active-throughput probe, pinned to `gw` via a
 /// permanent /32 route (see `ensure_probe_route`) instead of a per-cycle
 /// temporary one.
-pub fn probe_channel(api: &mut ApiRos, probe_ip: &str, gw: &str, latency_count: u32, speed_count: u32) -> ChannelProbe {
+#[cfg(any())]
+pub fn probe_channel(
+    api: &mut ApiRos,
+    probe_ip: &str,
+    gw: &str,
+    latency_count: u32,
+    speed_count: u32,
+) -> ChannelProbe {
     if ensure_probe_route(api, &tag_for(probe_ip), probe_ip, gw) {
         std::thread::sleep(Duration::from_millis(500));
     }
 
-    let (avg_ms, loss_pct) = match api.talk(&["/ping", &format!("=address={}", probe_ip), &format!("=count={}", latency_count)]) {
+    let (avg_ms, loss_pct) = match api.talk(&[
+        "/ping",
+        &format!("=address={}", probe_ip),
+        &format!("=count={}", latency_count),
+    ]) {
         Ok(rows) => match rows.into_iter().filter(|(r, _)| r == "!re").last() {
             Some((_, attrs)) => (
                 attrs.get("=avg-rtt").and_then(|v| parse_rtt(v)),
-                attrs.get("=packet-loss").and_then(|v| v.parse::<f64>().ok()).unwrap_or(100.0),
+                attrs
+                    .get("=packet-loss")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(100.0),
             ),
             None => (None, 100.0),
         },
@@ -375,12 +417,21 @@ pub fn probe_channel(api: &mut ApiRos, probe_ip: &str, gw: &str, latency_count: 
 
     // Skip the (slower) throughput leg if the channel is already down — no point
     // saturating a dead link's retry budget for a number that'll be None anyway.
-    let active_mbps = if loss_pct < 50.0 { active_throughput_mbps(api, probe_ip, speed_count) } else { None };
+    let active_mbps = if loss_pct < 50.0 {
+        active_throughput_mbps(api, probe_ip, speed_count)
+    } else {
+        None
+    };
 
-    ChannelProbe { avg_ms, loss_pct, active_mbps }
+    ChannelProbe {
+        avg_ms,
+        loss_pct,
+        active_mbps,
+    }
 }
 
 /// LMT (WAN1) gateway from ether3, BITE (WAN2) gateway from ether1.
+#[cfg(any())]
 pub fn get_gateways(api: &mut ApiRos) -> (Option<String>, Option<String>) {
     let mut gw1 = None;
     let mut gw2 = None;
@@ -405,8 +456,13 @@ pub fn get_gateways(api: &mut ApiRos) -> (Option<String>, Option<String>) {
 }
 
 /// Enable/disable the LB-w{prefix}* default routes (0.0.0.0/0 only). Returns count changed.
+#[cfg(any())]
 pub fn set_wan_routes(api: &mut ApiRos, prefix: &str, enabled: bool) -> u32 {
-    let cmd = if enabled { "/ip/route/enable" } else { "/ip/route/disable" };
+    let cmd = if enabled {
+        "/ip/route/enable"
+    } else {
+        "/ip/route/disable"
+    };
     let mut count = 0;
     if let Ok(rows) = api.talk(&["/ip/route/print"]) {
         for (r, attrs) in rows {
@@ -430,13 +486,23 @@ pub fn set_wan_routes(api: &mut ApiRos, prefix: &str, enabled: bool) -> u32 {
 pub fn read_traffic(api: &mut ApiRos) -> (Option<i64>, Option<i64>, Option<i64>, Option<i64>) {
     let mut zte = None;
     let mut soyea = None;
-    if let Ok(rows) = api.talk(&["/interface/monitor-traffic", "=interface=ether1,ether3", "=once="]) {
+    if let Ok(rows) = api.talk(&[
+        "/interface/monitor-traffic",
+        "=interface=ether1,ether3",
+        "=once=",
+    ]) {
         for (r, attrs) in rows {
             if r != "!re" {
                 continue;
             }
-            let rx = attrs.get("=rx-bits-per-second").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-            let tx = attrs.get("=tx-bits-per-second").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+            let rx = attrs
+                .get("=rx-bits-per-second")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let tx = attrs
+                .get("=tx-bits-per-second")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
             match attrs.get("=name").map(|s| s.as_str()) {
                 Some("ether3") => zte = Some((rx, tx)),
                 Some("ether1") => soyea = Some((rx, tx)),
@@ -444,7 +510,12 @@ pub fn read_traffic(api: &mut ApiRos) -> (Option<i64>, Option<i64>, Option<i64>,
             }
         }
     }
-    (zte.map(|(rx, _)| rx), zte.map(|(_, tx)| tx), soyea.map(|(rx, _)| rx), soyea.map(|(_, tx)| tx))
+    (
+        zte.map(|(rx, _)| rx),
+        zte.map(|(_, tx)| tx),
+        soyea.map(|(rx, _)| rx),
+        soyea.map(|(_, tx)| tx),
+    )
 }
 
 pub fn channel_for_host(host: &str) -> &'static str {

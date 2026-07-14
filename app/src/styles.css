@@ -249,17 +249,6 @@ table.events tr.up td {
   color: #888;
 }
 
-.agent-approval {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: #3a2a14;
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
-  color: #fbbf24;
-}
-
 .agent-input {
   display: flex;
   gap: 10px;
