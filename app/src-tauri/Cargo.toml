@@ -1,13 +1,13 @@
 [package]
-name = "wan-monitor-app"
-version = "0.1.0"
+name = "mymikrotik"
+version = "0.2.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
 # Two [[bin]] targets now exist (the GUI app + the headless wan_cli used by
 # the Node MCP entrypoint) — without this, `cargo run` (which `tauri dev`
 # invokes) can't pick one automatically.
-default-run = "wan-monitor-app"
+default-run = "mymikrotik"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -31,4 +31,3 @@ tauri-plugin-mcp-bridge = "0.11.2"
 regex = "1"
 md-5 = "0.10"
 chrono = { version = "0.4", features = ["clock"] }
-

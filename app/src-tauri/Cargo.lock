@@ -2056,6 +2056,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mymikrotik"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "md-5",
+ "regex",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-agent",
+ "tauri-plugin-mcp-bridge",
+ "tauri-plugin-opener",
+]
+
+[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4448,22 +4464,6 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
-]
-
-[[package]]
-name = "wan-monitor-app"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "md-5",
- "regex",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-agent",
- "tauri-plugin-mcp-bridge",
- "tauri-plugin-opener",
 ]
 
 [[package]]

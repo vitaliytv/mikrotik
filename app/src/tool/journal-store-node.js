@@ -3,7 +3,7 @@
 // journal binary; mikrotik's journal is a low-concurrency audit trail, not core
 // app state — see the plan's rationale). Writes to the same literal directory
 // tauri-plugin-agent's journal_* commands use by default for this app's bundle
-// id (com.vitalii.wan-monitor-app), unless AGENT_REQUESTS_DIR overrides it —
+// id (com.vitalii.mymikrotik), unless AGENT_REQUESTS_DIR overrides it —
 // both sides are deliberately not trying to resolve Tauri's path API exactly,
 // just pointing at the same hardcoded path (macOS-only, single user).
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
@@ -14,7 +14,7 @@ import path from "node:path";
 function requestsDir() {
   return (
     process.env.AGENT_REQUESTS_DIR ||
-    path.join(os.homedir(), "Library", "Application Support", "com.vitalii.wan-monitor-app", "requests")
+    path.join(os.homedir(), "Library", "Application Support", "com.vitalii.mymikrotik", "requests")
   );
 }
 

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "wan-monitor-app",
-  "version": "0.1.0",
-  "identifier": "com.vitalii.wan-monitor-app",
+  "productName": "mymikrotik",
+  "version": "0.2.1",
+  "identifier": "com.vitalii.mymikrotik",
   "build": {
     "frontendDist": "../src"
   },

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "wan-monitor-app",
+      "name": "mymikrotik",
       "dependencies": {
         "@7n/tauri-components": "^0.8.0",
         "@modelcontextprotocol/sdk": "^1.29.0",
