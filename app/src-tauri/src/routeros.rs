@@ -9,7 +9,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 pub const PROBE_ZTE: &str = "212.93.105.242"; // стабільний хост на межі мережі LMT (WAN1)
-pub const PROBE_SOYEA: &str = "84.15.67.179"; // стабільний хост на межі мережі BITE (WAN2)
+pub const PROBE_LMT_PUBLIC: &str = "1.1.1.1"; // незалежний публічний target через WAN1
 
 pub struct ApiRos {
     stream: TcpStream,

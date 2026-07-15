@@ -54,33 +54,48 @@ add comment="LMT-primary dual-WAN health controller" \
     read,write,policy,test source=":global dwState\
     \n:global dwLmtBad\
     \n:global dwLmtGood\
+    \n:global dwLmtQualityBad\
+    \n:global dwLmtQualityState\
     \n:global dwLastDecision\
     \n\
     \n:if ([:typeof \$dwState] = \"nothing\") do={ :set dwState \"lmt\" }\
     \n:if ([:typeof \$dwLmtBad] = \"nothing\") do={ :set dwLmtBad 0 }\
     \n:if ([:typeof \$dwLmtGood] = \"nothing\") do={ :set dwLmtGood 0 }\
+    \n:if ([:typeof \$dwLmtQualityBad] = \"nothing\") do={ :set dwLmtQualityBad 0 }\
+    \n:if ([:typeof \$dwLmtQualityState] = \"nothing\") do={ :set dwLmtQualityState \"healthy\" }\
     \n\
     \n:local gwLmt [/ip dhcp-client get [find name=\"client2\"] gateway]\
-    \n:local gwBite [/ip dhcp-client get [find name=\"client1\"] gateway]\
     \n:local probeLmt [/ip route find comment=\"DUALWAN-probe-lmt\"]\
-    \n:local probeBite [/ip route find comment=\"DUALWAN-probe-bite\"]\
+    \n:local probePublic [/ip route find comment=\"DUALWAN-probe-lmt-public\"]\
     \n:if (([:len \$gwLmt] > 0) && ([:len \$probeLmt] > 0)) do={\
     \n  :if ([/ip route get \$probeLmt gateway] != \$gwLmt) do={ /ip route set\
     \_\$probeLmt gateway=\$gwLmt }\
     \n}\
-    \n:if (([:len \$gwBite] > 0) && ([:len \$probeBite] > 0)) do={\
-    \n  :if ([/ip route get \$probeBite gateway] != \$gwBite) do={ /ip route s\
-    et \$probeBite gateway=\$gwBite }\
+    \n:if (([:len \$gwLmt] > 0) && ([:len \$probePublic] > 0)) do={\
+    \n  :if ([/ip route get \$probePublic gateway] != \$gwLmt) do={ /ip route set\
+    \_\$probePublic gateway=\$gwLmt }\
     \n}\
-    \n# probe gateway follows DHCP lease\
+    \n# Both LMT probe gateways follow its DHCP lease; BITE is blind reserve\
     \n:local lmtReceived [/tool/ping address=212.93.105.242 count=3 interval=2\
-    00ms]\
-    \n:local biteReceived [/tool/ping address=84.15.67.179 count=3 interval=20\
-    0ms]\
-    \n:local lmtGood (\$lmtReceived >= 2)\
-    \n:local biteGood (\$biteReceived >= 2)\
+    00ms timeout=800ms]\
+    \n:local publicReceived [/tool/ping address=1.1.1.1 count=3 interval=200ms timeout=800ms]\
+    \n:local lmtGood ((\$lmtReceived >= 2) || (\$publicReceived >= 2))\
+    \n:local lmtLossDegraded ((\$lmtReceived < 3) && (\$publicReceived < 3))\
     \n:local next \$dwState\
     \n:local reason \"hold\"\
+    \n\
+    \n# Telemetry only: 12 consecutive 5s cycles with loss on both targets = 60s.\
+    \n:if (\$lmtLossDegraded) do={\
+    \n  :set dwLmtQualityBad (\$dwLmtQualityBad + 1)\
+    \n  :if ((\$dwLmtQualityBad >= 12) && (\$dwLmtQualityState != \"degraded\")) do={\
+    \n    :log warning (\"DUALWAN quality=lmt-loss-degraded window=60s edge-received=\" . \$lmtReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
+    \n    :set dwLmtQualityState \"degraded\"\
+    \n  }\
+    \n} else={\
+    \n  :if (\$dwLmtQualityState = \"degraded\") do={ :log warning \"DUALWAN quality=lmt-loss-recovered\" }\
+    \n  :set dwLmtQualityBad 0\
+    \n  :set dwLmtQualityState \"healthy\"\
+    \n}\
     \n\
     \n:if (\$dwState = \"lmt\") do={\
     \n  :if (\$lmtGood) do={\
@@ -89,13 +104,13 @@ add comment="LMT-primary dual-WAN health controller" \
     \n    :set reason \"lmt-primary-healthy\"\
     \n  } else={\
     \n    :set dwLmtBad (\$dwLmtBad + 1)\
-    \n    :if ((\$dwLmtBad >= 3) && \$biteGood) do={\
+    \n    :if (\$dwLmtBad >= 3) do={\
     \n      :set next \"bite\"\
     \n      :set dwLmtBad 0\
     \n      :set dwLmtGood 0\
-    \n      :set reason \"lmt-failed-3x-bite-usable\"\
+    \n      :set reason \"lmt-both-probes-failed-3x-blind-fallback\"\
     \n    } else={\
-    \n      :set reason \"lmt-degraded-keep-primary\"\
+    \n      :set reason \"lmt-both-probes-degraded-keep-primary\"\
     \n    }\
     \n  }\
     \n} else={\
@@ -134,8 +149,7 @@ add comment="LMT-primary dual-WAN health controller" \
     \n\
     \n:if (\$dwLastDecision != \$dwState) do={\
     \n  :log warning (\"DUALWAN state=\" . \$dwState . \" reason=\" . \$reason\
-    \_. \" lmt-received=\" . \$lmtReceived . \"/3 bite-received=\" . \$biteRec\
-    eived . \"/3\")\
+    \_. \" edge-received=\" . \$lmtReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
     \n  :set dwLastDecision \$dwState\
     \n}"
 /disk settings
@@ -224,8 +238,16 @@ add action=masquerade chain=srcnat comment="defconf: masquerade" \
 /ip route
 add comment=DUALWAN-probe-lmt dst-address=212.93.105.242/32 gateway=\
     192.168.0.1 scope=10
-add comment=DUALWAN-probe-bite dst-address=84.15.67.179/32 gateway=\
-    192.168.8.1 scope=10
+add comment=DUALWAN-probe-lmt-public dst-address=1.1.1.1/32 gateway=\
+    192.168.0.1 scope=10
+add blackhole comment=DUALWAN-probe-lmt-blackhole distance=2 dst-address=\
+    212.93.105.242/32
+add blackhole comment=DUALWAN-probe-lmt-public-blackhole distance=2 \
+    dst-address=1.1.1.1/32
+/ipv6 dhcp-client
+add add-default-route=no comment="DUALWAN: LMT IPv6 prefix delegation" \
+    interface=ether3 pool-name=LMT-ipv6 pool-prefix-length=64 request=prefix \
+    use-peer-dns=no
 /ipv6 firewall address-list
 add address=::/128 comment="defconf: unspecified address" list=bad_ipv6
 add address=::1/128 comment="defconf: lo" list=bad_ipv6

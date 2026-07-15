@@ -1,6 +1,6 @@
 mod routeros;
 
-use routeros::{connect_and_login, read_traffic, ApiRos, PROBE_SOYEA, PROBE_ZTE};
+use routeros::{connect_and_login, read_traffic, ApiRos, PROBE_LMT_PUBLIC, PROBE_ZTE};
 use serde::Serialize;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -87,6 +87,7 @@ fn read_wan_speed() -> Result<String, String> {
 #[derive(Serialize)]
 struct ProbeInfo {
     channel: String,
+    target: String,
     received: String,
     loss_percent: String,
     avg_rtt: String,
@@ -128,6 +129,12 @@ struct SwitchEvent {
 }
 
 #[derive(Serialize)]
+struct QualityEvent {
+    time: String,
+    status: String,
+}
+
+#[derive(Serialize)]
 struct RawLogLine {
     time: String,
     topics: String,
@@ -141,6 +148,7 @@ struct RouterLogResult {
     routes: Vec<RouteInfo>,
     probes: Vec<ProbeInfo>,
     switch_events: Vec<SwitchEvent>,
+    quality_events: Vec<QualityEvent>,
     raw_log: Vec<RawLogLine>,
     log_total_lines: usize,
 }
@@ -174,6 +182,7 @@ fn read_probe(api: &mut ApiRos, channel: &str, address: &str) -> ProbeInfo {
         .unwrap_or_default();
     ProbeInfo {
         channel: channel.to_string(),
+        target: address.to_string(),
         received: summary.get("=received").cloned().unwrap_or_else(|| "0".to_string()),
         loss_percent: summary.get("=packet-loss").cloned().unwrap_or_else(|| "100".to_string()),
         avg_rtt: summary.get("=avg-rtt").cloned().unwrap_or_else(|| "?".to_string()),
@@ -255,7 +264,9 @@ pub fn read_router_log_impl() -> Result<String, String> {
     let log_rows: Vec<_> = log_rows.into_iter().filter(|(r, _)| r == "!re").collect();
 
     let mut switch_events = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut quality_events = Vec::new();
+    let mut seen_switches = std::collections::HashSet::new();
+    let mut seen_quality = std::collections::HashSet::new();
     for (_, attrs) in &log_rows {
         let msg = attrs.get("=message").cloned().unwrap_or_default();
         let t = attrs.get("=time").cloned().unwrap_or_default();
@@ -267,7 +278,7 @@ pub fn read_router_log_impl() -> Result<String, String> {
                 .unwrap_or_default()
                 .to_string();
             let key = (t.clone(), state.clone(), reason.clone());
-            if !seen.insert(key) {
+            if !seen_switches.insert(key) {
                 continue;
             }
             switch_events.push(SwitchEvent {
@@ -275,6 +286,12 @@ pub fn read_router_log_impl() -> Result<String, String> {
                 state,
                 reason,
             });
+        } else if let Some(rest) = msg.strip_prefix("DUALWAN quality=") {
+            let status = rest.split_whitespace().next().unwrap_or_default().to_string();
+            let key = (t.clone(), status.clone());
+            if seen_quality.insert(key) {
+                quality_events.push(QualityEvent { time: t, status });
+            }
         }
     }
 
@@ -298,9 +315,10 @@ pub fn read_router_log_impl() -> Result<String, String> {
         routes,
         probes: vec![
             read_probe(&mut api, "zte", PROBE_ZTE),
-            read_probe(&mut api, "soyea", PROBE_SOYEA),
+            read_probe(&mut api, "zte", PROBE_LMT_PUBLIC),
         ],
         switch_events,
+        quality_events,
         raw_log,
         log_total_lines,
     };

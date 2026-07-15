@@ -8,9 +8,10 @@ Chart.register(window["chartjs-plugin-annotation"]);
 const LIVE_MAX_POINTS = 240; // 240 * 15с ≈ 1 година в пам'яті, поки застосунок відкритий
 const TRAFFIC_AVERAGE_WINDOW = 4; // 4 * 15с = 1 хвилина
 
-let flapsChart, speedChart;
+let flapsChart, qualityChart, speedChart;
 let liveSamples = []; // Passive interface counters only; history lives in memory while the viewer is open.
 let switchEvents = []; // {ts: Date, time, state, reason}
+let qualityEvents = []; // {ts: Date, time, status}
 let rawLogCache = []; // {time, topics, message}
 
 const routerStatusEl = () => document.querySelector("#router-status");
@@ -145,17 +146,22 @@ function renderControllerCards(data) {
   const nameFor = { zte: "LMT (WAN1)", soyea: "BITE (WAN2)" };
   const controller = data.controller || {};
   const dhcp = Object.fromEntries((data.dhcp || []).map((row) => [row.channel, row]));
-  const probes = Object.fromEntries((data.probes || []).map((row) => [row.channel, row]));
+  const probes = data.probes || [];
   const routes = data.routes || [];
   for (const channel of ["zte", "soyea"]) {
-    const probe = probes[channel] || {};
+    const channelProbes = probes.filter((probe) => probe.channel === channel);
     const lease = dhcp[channel] || {};
     const mainRoute = routes.find((route) => route.channel === channel && route.table === "main") || {};
     const primary = controller.state === (channel === "zte" ? "lmt" : "bite");
     const card = document.createElement("div");
-    card.className = `nw-card ${Number(probe.received || 0) >= 2 ? "up" : "down"}`;
+    const measured = channel === "zte";
+    const lmtGood = channelProbes.some((probe) => Number(probe.received || 0) >= 2);
+    const probeDetail = channelProbes
+      .map((probe) => `${probe.target}: ${probe.received || "0"}/3, ${probe.loss_percent || "?"}%, ${probe.avg_rtt || "?"}`)
+      .join(" | ");
+    card.className = `nw-card ${measured && !lmtGood ? "down" : "up"}`;
     card.innerHTML = `<div class="title">${nameFor[channel]} — ${primary ? "primary" : "reserve"}</div>
-      <div class="detail">probe ${probe.received || "0"}/3, loss ${probe.loss_percent || "?"}%, RTT ${probe.avg_rtt || "?"}</div>
+      <div class="detail">${measured ? probeDetail : "blind reserve: доступність не вимірюється"}</div>
       <div class="detail">DHCP ${lease.status || "?"}, main distance ${mainRoute.distance || "?"}, gw ${lease.gateway || mainRoute.gateway || "?"}</div>`;
     el.appendChild(card);
   }
@@ -190,6 +196,41 @@ function renderFlapsChart(events) {
       scales: {
         x: { stacked: true, ticks: { color: "#888", maxRotation: 60, minRotation: 60 }, grid: { color: "#2a2a3e" } },
         y: { stacked: true, ticks: { color: "#ccc" }, grid: { color: "#2a2a3e" }, title: { display: true, text: "к-сть", color: "#aaa" } },
+      },
+    },
+  });
+}
+
+function renderQualityChart(events) {
+  const buckets = {};
+  for (const ev of events) {
+    const bucket = hourBucket(ev.ts);
+    buckets[bucket] = buckets[bucket] || { degraded: 0, recovered: 0 };
+    if (ev.status === "lmt-loss-degraded") buckets[bucket].degraded += 1;
+    if (ev.status === "lmt-loss-recovered") buckets[bucket].recovered += 1;
+  }
+  const labels = Object.keys(buckets).sort();
+  const degraded = labels.map((label) => buckets[label].degraded);
+  const recovered = labels.map((label) => buckets[label].recovered);
+  if (qualityChart) qualityChart.destroy();
+  qualityChart = new Chart(document.getElementById("quality"), {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "LMT loss degraded", data: degraded, backgroundColor: "#f59e0b" },
+        { label: "LMT відновлено", data: recovered, backgroundColor: "#34d399" },
+      ],
+    },
+    options: {
+      animation: false,
+      plugins: {
+        title: { display: true, text: "LMT quality-події: втрата на обох probes 60 с", color: "#7dd3fc", font: { size: 14 } },
+        legend: { labels: { color: "#ccc" } },
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: "#888", maxRotation: 60, minRotation: 60 }, grid: { color: "#2a2a3e" } },
+        y: { stacked: true, ticks: { color: "#ccc", precision: 0 }, grid: { color: "#2a2a3e" }, title: { display: true, text: "події", color: "#aaa" } },
       },
     },
   });
@@ -230,9 +271,11 @@ async function loadRouterLog() {
       return;
     }
     switchEvents = (data.switch_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
+    qualityEvents = (data.quality_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
     rawLogCache = data.raw_log || [];
     renderControllerCards(data);
     renderFlapsChart(switchEvents);
+    renderQualityChart(qualityEvents);
     renderEventsTable(switchEvents);
     if (!document.getElementById("raw-log-view").hidden) renderRawLog();
     const controller = data.controller || {};
