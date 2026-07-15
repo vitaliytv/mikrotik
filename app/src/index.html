@@ -9,13 +9,6 @@
     <script src="vendor/chartjs-plugin-annotation.min.js"></script>
   </head>
   <body>
-    <header>
-      <h1>WAN Monitor: перегляд стану роутера</h1>
-      <div class="controls">
-        <span id="status">Пасивні показники, без ping-проб</span>
-      </div>
-    </header>
-
     <header style="margin-top:28px">
       <h1>Трафік на WAN-інтерфейсах (середнє за 1 хв)</h1>
       <div class="controls">
@@ -27,31 +20,31 @@
     </div>
 
     <header style="margin-top:28px">
-      <h1>Журнал failover LMT</h1>
+      <h1>Стан dual-WAN scheduler</h1>
       <div class="controls">
         <span id="router-status">—</span>
-        <button id="refresh-router">Оновити лог</button>
-        <button id="toggle-raw-log">Показати лог MikroTik</button>
       </div>
     </header>
     <div class="charts">
       <div class="box"><canvas id="flaps"></canvas></div>
       <div class="box">
-        <div class="netwatch-cards" id="netwatch-cards"></div>
+        <div class="netwatch-cards" id="controller-cards"></div>
         <table class="events" id="events-table">
           <thead>
-            <tr><th>Час</th><th>Канал</th><th>Подія</th></tr>
+            <tr><th>Час</th><th>Primary WAN</th><th>Причина</th></tr>
           </thead>
           <tbody id="events-body"></tbody>
         </table>
       </div>
     </div>
-    <div class="box raw-log" id="raw-log-box" hidden>
+    <div class="box raw-log" id="raw-log-box">
       <div class="raw-log-toolbar">
         <span>Сирий лог MikroTik (останні <span id="raw-log-count">0</span> рядків)</span>
+        <button id="refresh-router">Оновити лог</button>
+        <button id="toggle-raw-log">Показати лог MikroTik</button>
         <input type="text" id="raw-log-filter" placeholder="Фільтр по тексту…" autocomplete="off" />
       </div>
-      <pre class="raw-log-view" id="raw-log-view"></pre>
+      <pre class="raw-log-view" id="raw-log-view" hidden></pre>
     </div>
 
     <header style="margin-top:28px">

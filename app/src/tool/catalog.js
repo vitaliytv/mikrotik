@@ -5,7 +5,7 @@ export const TOOLS = [
     tier: "read",
     name: "read_router_events",
     summary:
-      "Read recent MikroTik router log: netwatch status per channel and a flap-event history (channel disabled/re-enabled by netwatch, the sole failover mechanism — runs entirely on the router).",
+      "Read current RouterOS dual-WAN scheduler state, DHCP route priorities, pinned LMT/BITE health probes, and recent primary-WAN switch events.",
     input: {},
     tauri: "read_router_log",
   },

@@ -10,11 +10,9 @@ const TRAFFIC_AVERAGE_WINDOW = 4; // 4 * 15с = 1 хвилина
 
 let flapsChart, speedChart;
 let liveSamples = []; // Passive interface counters only; history lives in memory while the viewer is open.
-let flapEvents = []; // {ts: Date, time, channel, action}
-let netwatchCache = [];
+let switchEvents = []; // {ts: Date, time, state, reason}
 let rawLogCache = []; // {time, topics, message}
 
-const statusEl = () => document.querySelector("#status");
 const routerStatusEl = () => document.querySelector("#router-status");
 const speedStatusEl = () => document.querySelector("#speed-status");
 
@@ -38,7 +36,6 @@ function onWanSample(sample) {
     soyeaTx: toMbps(sample.soyea_tx_bps),
   });
   if (liveSamples.length > LIVE_MAX_POINTS) liveSamples.shift();
-  statusEl().textContent = `Пасивних точок у пам'яті: ${liveSamples.length} | Оновлено: ${fmtClock(new Date(sample.ts))}`;
   renderSpeedChart();
 }
 
@@ -142,42 +139,52 @@ function hourBucket(d) {
   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:00`;
 }
 
-function renderNetwatchCards(netwatch) {
-  const el = document.getElementById("netwatch-cards");
+function renderControllerCards(data) {
+  const el = document.getElementById("controller-cards");
   el.innerHTML = "";
   const nameFor = { zte: "LMT (WAN1)", soyea: "BITE (WAN2)" };
-  for (const nw of netwatch) {
+  const controller = data.controller || {};
+  const dhcp = Object.fromEntries((data.dhcp || []).map((row) => [row.channel, row]));
+  const probes = Object.fromEntries((data.probes || []).map((row) => [row.channel, row]));
+  const routes = data.routes || [];
+  for (const channel of ["zte", "soyea"]) {
+    const probe = probes[channel] || {};
+    const lease = dhcp[channel] || {};
+    const mainRoute = routes.find((route) => route.channel === channel && route.table === "main") || {};
+    const primary = controller.state === (channel === "zte" ? "lmt" : "bite");
     const card = document.createElement("div");
-    card.className = `nw-card ${nw.status === "up" ? "up" : "down"}`;
-    card.innerHTML = `<div class="title">${nameFor[nw.channel] || nw.channel} — ${nw.status}</div>
-      <div class="detail">з ${nw.since || "?"} | ${nw.packet_count} пінгів / ${nw.interval} / поріг ${nw.thr_loss_percent}%</div>`;
+    card.className = `nw-card ${Number(probe.received || 0) >= 2 ? "up" : "down"}`;
+    card.innerHTML = `<div class="title">${nameFor[channel]} — ${primary ? "primary" : "reserve"}</div>
+      <div class="detail">probe ${probe.received || "0"}/3, loss ${probe.loss_percent || "?"}%, RTT ${probe.avg_rtt || "?"}</div>
+      <div class="detail">DHCP ${lease.status || "?"}, main distance ${mainRoute.distance || "?"}, gw ${lease.gateway || mainRoute.gateway || "?"}</div>`;
     el.appendChild(card);
   }
 }
 
 function renderFlapsChart(events) {
   const buckets = {};
-  for (const ev of events.filter((ev) => ev.channel === "zte")) {
-    if (ev.action !== "down") continue; // рахуємо тільки моменти падіння каналу
+  for (const ev of events) {
     const b = hourBucket(ev.ts);
-    buckets[b] = buckets[b] || { zte: 0 };
-    buckets[b].zte = (buckets[b].zte || 0) + 1;
+    buckets[b] = buckets[b] || { lmt: 0, bite: 0 };
+    buckets[b][ev.state] = (buckets[b][ev.state] || 0) + 1;
   }
   const labels = Object.keys(buckets).sort();
-  const zte = labels.map((l) => buckets[l].zte || 0);
+  const lmt = labels.map((l) => buckets[l].lmt || 0);
+  const bite = labels.map((l) => buckets[l].bite || 0);
   if (flapsChart) flapsChart.destroy();
   flapsChart = new Chart(document.getElementById("flaps"), {
     type: "bar",
     data: {
       labels,
       datasets: [
-        { label: "LMT флапи/год", data: zte, backgroundColor: "#f87171" },
+        { label: "LMT primary", data: lmt, backgroundColor: "#60a5fa" },
+        { label: "BITE primary", data: bite, backgroundColor: "#34d399" },
       ],
     },
     options: {
       animation: false,
       plugins: {
-        title: { display: true, text: "Частота LMT failover-подій по годинах", color: "#7dd3fc", font: { size: 14 } },
+          title: { display: true, text: "Перемикання primary WAN по годинах", color: "#7dd3fc", font: { size: 14 } },
         legend: { labels: { color: "#ccc" } },
       },
       scales: {
@@ -191,12 +198,11 @@ function renderFlapsChart(events) {
 function renderEventsTable(events) {
   const body = document.getElementById("events-body");
   body.innerHTML = "";
-  const nameFor = { zte: "LMT", soyea: "BITE" };
-  const recent = events.filter((ev) => ev.channel === "zte").slice(-300).reverse();
+  const recent = events.slice(-300).reverse();
   for (const ev of recent) {
     const tr = document.createElement("tr");
-    tr.className = ev.action;
-    tr.innerHTML = `<td>${ev.time}</td><td>${nameFor[ev.channel] || ev.channel}</td><td>${ev.action === "down" ? "⛔ вимкнено" : "✅ відновлено"}</td>`;
+    tr.className = ev.state === "bite" ? "down" : "up";
+    tr.innerHTML = `<td>${ev.time}</td><td>${ev.state === "bite" ? "BITE" : "LMT"}</td><td>${ev.reason || "—"}</td>`;
     body.appendChild(tr);
   }
 }
@@ -208,6 +214,8 @@ function renderRawLog() {
     : rawLogCache;
   document.getElementById("raw-log-count").textContent = rows.length;
   document.getElementById("raw-log-view").textContent = rows
+    .slice()
+    .reverse()
     .map((r) => `${r.time}  [${r.topics}]  ${r.message}`)
     .join("\n");
 }
@@ -221,15 +229,14 @@ async function loadRouterLog() {
       routerStatusEl().textContent = `Помилка: ${data.error}`;
       return;
     }
-    netwatchCache = data.netwatch || [];
-    flapEvents = (data.flap_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
+    switchEvents = (data.switch_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
     rawLogCache = data.raw_log || [];
-    renderNetwatchCards(netwatchCache);
-    renderFlapsChart(flapEvents);
-    renderEventsTable(flapEvents);
-    if (!document.getElementById("raw-log-box").hidden) renderRawLog();
-    const downCount = flapEvents.filter((e) => e.channel === "zte" && e.action === "down").length;
-    routerStatusEl().textContent = `Проаналізовано ${data.log_total_lines} рядків логу | падінь LMT: ${downCount}`;
+    renderControllerCards(data);
+    renderFlapsChart(switchEvents);
+    renderEventsTable(switchEvents);
+    if (!document.getElementById("raw-log-view").hidden) renderRawLog();
+    const controller = data.controller || {};
+    routerStatusEl().textContent = `scheduler ${controller.scheduler_enabled === "true" ? "активний" : "недоступний"} | ${controller.interval || "?"} | primary: ${(controller.state || "?").toUpperCase()} | запусків: ${controller.scheduler_runs || "?"}`;
   } catch (e) {
     routerStatusEl().textContent = `Помилка: ${e}`;
   }
@@ -294,15 +301,15 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#refresh-router").addEventListener("click", loadRouterLog);
 
   document.getElementById("toggle-raw-log").addEventListener("click", () => {
-    const box = document.getElementById("raw-log-box");
-    box.hidden = !box.hidden;
-    document.getElementById("toggle-raw-log").textContent = box.hidden
+    const view = document.getElementById("raw-log-view");
+    view.hidden = !view.hidden;
+    document.getElementById("toggle-raw-log").textContent = view.hidden
       ? "Показати лог MikroTik"
       : "Сховати лог MikroTik";
     // Force a fresh fetch on open instead of rendering whatever's cached —
     // otherwise opening it right after launch (before the first 60s tick)
     // shows a stale/empty "0 рядків".
-    if (!box.hidden) loadRouterLog();
+    if (!view.hidden) loadRouterLog();
   });
   document.getElementById("raw-log-filter").addEventListener("input", renderRawLog);
   renderSpeedChart();
