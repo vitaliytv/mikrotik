@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Автоматичний реліз із change-файлів: merge у main з app/.changes/*.md →
+# `n-cursor release` (бамп version + CHANGELOG.md + коміт "release: app@X" +
+# тег app@X) → тег vX → dispatch release.yml (DMG/updater-артефакти).
+# Пуш тегів робиться GITHUB_TOKEN-ом і не тригерить workflows, тому
+# release.yml викликається явно через workflow_dispatch.
+
+name: Changelog Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - app/.changes/**
+  workflow_dispatch: {}
+
+concurrency:
+  group: changelog-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Страховка від циклу при ручному пуші release-коміту (він теж матчить
+    # paths, бо видаляє change-файли); пуші від GITHUB_TOKEN не тригерять і так.
+    if: "!startsWith(github.event.head_commit.message, 'release:')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun-deps
+      - name: Configure git identity + push auth
+        run: >-
+          git config user.name "github-actions[bot]"
+
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote set-url origin "https://x-access-token:${{
+          secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+      - name: Run n-cursor release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npx @nitra/cursor release
+
+      - name: Detect produced release
+        id: rel
+        run: |
+          if git log -1 --pretty=%s | grep -q '^release:'; then
+            VER=$(node -p "require('./app/package.json').version")
+            echo "version=$VER" >> "$GITHUB_OUTPUT"
+            echo "released version $VER"
+          else
+            echo "no pending change files — nothing released"
+          fi
+
+      - name: Tag and push
+        if: steps.rel.outputs.version
+        run: |
+          VER="${{ steps.rel.outputs.version }}"
+          git tag "app@$VER" 2>/dev/null || true
+          git tag "v$VER"
+          git push origin HEAD:main "refs/tags/app@$VER" "refs/tags/v$VER"
+
+      - name: Dispatch DMG release build
+        if: steps.rel.outputs.version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --ref "v${{ steps.rel.outputs.version }}"

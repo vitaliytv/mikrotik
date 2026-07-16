@@ -1,0 +1,16 @@
+{
+  "name": "mikrotik",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "app"
+  ],
+  "type": "module",
+  "devDependencies": {
+    "@nitra/cursor": "^14.33.0"
+  },
+  "engines": {
+    "bun": ">=1.3",
+    "node": ">=24"
+  }
+}

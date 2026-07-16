@@ -1,0 +1,109 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Create or reuse release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const params = { owner: context.repo.owner, repo: context.repo.repo };
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ ...params, tag })).data;
+            } catch {
+              release = (await github.rest.repos.createRelease({
+                ...params,
+                tag_name: tag,
+                name: `mymikrotik ${tag}`,
+                draft: false,
+                prerelease: false,
+                generate_release_notes: true,
+              })).data;
+            }
+            return String(release.id);
+
+  build-desktop:
+    needs: create-release
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      id-token: write # OIDC-токен для автентифікації в Infisical
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-bun-deps
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[cache-poisoning]
+      - name: Sync app version from tag
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          node -e "const fs=require('fs');const f='app/src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(f));c.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(c,null,2)+'\n')" "$VER"
+          echo "tauri.conf.json version → $VER"
+
+      - name: Fetch Apple signing secrets from Infisical
+        uses: Infisical/secrets-action@v1.0.16
+        with:
+          method: 'oidc'
+          domain: 'https://secret.7n.ai'
+          project-slug: 'vitaliytv-kfse'
+          identity-id: '53691c96-17d9-4389-b078-0f77073809ab'
+          env-slug: 'main'
+          secret-path: '/apple'
+
+      - name: Fetch updater signing key from Infisical
+        uses: Infisical/secrets-action@v1.0.16
+        with:
+          method: 'oidc'
+          domain: 'https://secret.7n.ai'
+          project-slug: 'vitaliytv-kfse'
+          identity-id: '53691c96-17d9-4389-b078-0f77073809ab'
+          env-slug: 'main'
+          secret-path: '/updater'
+
+      - name: Build and upload DMG
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ env.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ env.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ env.APPLE_ID }}
+          APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          projectPath: app
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target universal-apple-darwin
