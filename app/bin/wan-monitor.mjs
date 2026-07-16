@@ -6,9 +6,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createAgentKit } from "../src/vendor/tauri-components-core/agent-kit.js";
-import { createOpenAiChat } from "../src/vendor/tauri-components-core/llm.js";
-import { listTools, toolManifest } from "../src/vendor/tauri-components-core/manifest.js";
+import { createAgentKit, createOpenAiChat, listTools, toolManifest } from "@7n/tauri-components";
 import { TOOLS } from "../src/tool/catalog.js";
 import { createSystemPrompt } from "../src/tool/prompt.js";
 import { cliTransport } from "../src/tool/transport-cli.js";
