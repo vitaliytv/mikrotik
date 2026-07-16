@@ -334,17 +334,24 @@ fn read_router_log() -> Result<String, String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_agent::init())
-        .setup(|app| {
-            start_monitor_thread(app.handle().clone());
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log]);
+        .plugin(tauri_plugin_agent::init());
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    // relaunch() after installing the update, so the app restarts into the
+    // new version on its own instead of waiting for a manual restart.
+    let builder = builder.plugin(tauri_plugin_process::init());
 
     #[cfg(debug_assertions)]
     let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
 
     builder
+        .setup(|app| {
+            start_monitor_thread(app.handle().clone());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

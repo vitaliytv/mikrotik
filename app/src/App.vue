@@ -66,10 +66,13 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { AgentDialog, AuditDialog } from "@7n/tauri-components/components";
+import { useUpdater } from "@7n/tauri-components/vue";
 import { useAgent } from "./composables/use-agent.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+
+useUpdater();
 
 Chart.register(window["chartjs-plugin-annotation"]);
 
