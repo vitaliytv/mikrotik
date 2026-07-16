@@ -176,7 +176,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useQuasar } from "quasar";
 import { AgentDialog, AuditDialog } from "@7n/tauri-components/components";
 import { useUpdater } from "@7n/tauri-components/vue";
-import { useAgent } from "./composables/use-agent.js";
+import { useAcpAgent } from "./composables/use-acp-agent.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -205,7 +205,7 @@ const rawLogCache = ref([]); // {time, topics, message}
 const rawLogFilter = ref("");
 const rawLogVisible = ref(false);
 
-const agent = useAgent();
+const agent = useAcpAgent();
 const agentOpen = ref(false);
 const auditOpen = ref(false);
 
