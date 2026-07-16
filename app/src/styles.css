@@ -24,7 +24,9 @@ header {
   gap: 4px;
 }
 
-h1 {
+/* Higher specificity than plain `h1` so this reliably beats Quasar's global
+   h1 reset (6rem) regardless of CSS bundling/load order in production. */
+body h1 {
   color: #7dd3fc;
   font-size: 18px;
   margin: 0;

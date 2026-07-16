@@ -3,7 +3,7 @@ mod routeros;
 use routeros::{connect_and_login, read_traffic, ApiRos, PROBE_LMT_PUBLIC, PROBE_ZTE};
 use serde::Serialize;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const MONITOR_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -349,6 +349,11 @@ pub fn run() {
     builder
         .setup(|app| {
             start_monitor_thread(app.handle().clone());
+            if let Some(window) = app.get_webview_window("main") {
+                let base_title = window.title().unwrap_or_default();
+                let version = &app.package_info().version;
+                let _ = window.set_title(&format!("{base_title} v{version}"));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log])
