@@ -63,7 +63,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2 # zizmor: ignore[cache-poisoning]
       - name: Sync app version from tag
@@ -106,4 +106,11 @@ jobs:
         with:
           projectPath: app
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: --target universal-apple-darwin
+          # Apple Silicon only, not `universal-apple-darwin`: this crate has a second
+          # [[bin]] target (wan_cli, the headless MCP entrypoint) alongside the GUI
+          # binary, and tauri-cli's universal-build lipo-merge step only merges the
+          # main binary — it leaves wan_cli missing from the universal output dir,
+          # which then fails bundling ("Failed to copy binary from
+          # .../universal-apple-darwin/release/wan_cli": does not exist). Single-arch
+          # builds skip the lipo step entirely and bundle wan_cli as a sidecar fine.
+          args: --target aarch64-apple-darwin
