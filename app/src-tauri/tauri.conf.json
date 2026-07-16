@@ -4,7 +4,10 @@
   "version": "0.2.1",
   "identifier": "com.vitalii.mymikrotik",
   "build": {
-    "frontendDist": "../src"
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
