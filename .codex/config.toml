@@ -1,0 +1,15 @@
+[mcp_servers.tauri]
+command = "npx"
+args = [
+    "-y",
+    "@hypothesi/tauri-mcp-server",
+]
+
+[mcp_servers.wan-monitor]
+command = "node"
+args = [
+    "app/bin/wan-monitor.mjs",
+    "mcp",
+    "--actor",
+    "claude-code",
+]

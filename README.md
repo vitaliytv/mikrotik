@@ -28,9 +28,8 @@ MIKROTIK_PASS=твій_пароль
   перемикання немає стану без маршруту.
   Окремо scheduler лише логує quality warning після 60 с втрат на обох LMT
   targets; quality-події не змінюють маршрути.
-- **IPv6:** RouterOS має DHCPv6 PD client лише на LMT (`ether3`) без default
-  route. Станом на 2026-07-15 він очікує prefix від LMT/modem; доки prefix не
-  отримано, LAN IPv6 та IPv6 через BITE не увімкнені.
+- **IPv6:** не налаштований. IPv6 DHCPv6-клієнт LMT видалено 2026-07-15,
+  оскільки modem не видавав адресу або delegated prefix.
 - **backups/routeros-current.rsc** — актуальний санітизований текстовий
   export RouterOS; password/passphrase/secret значення замінені на
   `<redacted>`.

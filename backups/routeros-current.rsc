@@ -1,4 +1,4 @@
-# 2026-07-15 11:05:26 by RouterOS 7.23.1
+# 2026-07-15 16:50:32 by RouterOS 7.23.1
 # software id = 9DWX-CMV1
 #
 # model = C52iG-5HaxD2HaxD
@@ -76,11 +76,12 @@ add comment="LMT-primary dual-WAN health controller" \
     \_\$probePublic gateway=\$gwLmt }\
     \n}\
     \n# Both LMT probe gateways follow its DHCP lease; BITE is blind reserve\
-    \n:local lmtReceived [/tool/ping address=212.93.105.242 count=3 interval=2\
-    00ms timeout=800ms]\
-    \n:local publicReceived [/tool/ping address=1.1.1.1 count=3 interval=200ms timeout=800ms]\
-    \n:local lmtGood ((\$lmtReceived >= 2) || (\$publicReceived >= 2))\
-    \n:local lmtLossDegraded ((\$lmtReceived < 3) && (\$publicReceived < 3))\
+    \n:local edgeReceived 0\
+    \n:foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={ :set edgeReceived (\$edgeReceived + 1) }\
+    \n:local publicReceived 0\
+    \n:foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={ :set publicReceived (\$publicReceived + 1) }\
+    \n:local lmtGood ((\$edgeReceived >= 2) || (\$publicReceived >= 2))\
+    \n:local lmtLossDegraded ((\$edgeReceived < 3) && (\$publicReceived < 3))\
     \n:local next \$dwState\
     \n:local reason \"hold\"\
     \n\
@@ -88,7 +89,7 @@ add comment="LMT-primary dual-WAN health controller" \
     \n:if (\$lmtLossDegraded) do={\
     \n  :set dwLmtQualityBad (\$dwLmtQualityBad + 1)\
     \n  :if ((\$dwLmtQualityBad >= 12) && (\$dwLmtQualityState != \"degraded\")) do={\
-    \n    :log warning (\"DUALWAN quality=lmt-loss-degraded window=60s edge-received=\" . \$lmtReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
+    \n    :log warning (\"DUALWAN quality=lmt-loss-degraded window=60s edge-received=\" . \$edgeReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
     \n    :set dwLmtQualityState \"degraded\"\
     \n  }\
     \n} else={\
@@ -130,26 +131,22 @@ add comment="LMT-primary dual-WAN health controller" \
     \n  :if (\$next = \"bite\") do={\
     \n    /ip dhcp-client set [find name=\"client1\"] default-route-tables=\"m\
     ain:1,to_WAN1:1,to_WAN2:1\"\
-    \n    /ip dhcp-client renew [find name=\"client1\"]\
     \n    :delay 1s\
     \n    /ip dhcp-client set [find name=\"client2\"] default-route-tables=\"m\
     ain:2,to_WAN1:2,to_WAN2:2\"\
-    \n    /ip dhcp-client renew [find name=\"client2\"]\
     \n  } else={\
     \n    /ip dhcp-client set [find name=\"client2\"] default-route-tables=\"m\
     ain:1,to_WAN1:1,to_WAN2:2\"\
-    \n    /ip dhcp-client renew [find name=\"client2\"]\
     \n    :delay 1s\
     \n    /ip dhcp-client set [find name=\"client1\"] default-route-tables=\"m\
     ain:2,to_WAN1:2,to_WAN2:1\"\
-    \n    /ip dhcp-client renew [find name=\"client1\"]\
     \n  }\
     \n  :set dwState \$next\
     \n}\
     \n\
     \n:if (\$dwLastDecision != \$dwState) do={\
     \n  :log warning (\"DUALWAN state=\" . \$dwState . \" reason=\" . \$reason\
-    \_. \" edge-received=\" . \$lmtReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
+    \_. \" edge-received=\" . \$edgeReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
     \n  :set dwLastDecision \$dwState\
     \n}"
 /disk settings
@@ -244,10 +241,6 @@ add blackhole comment=DUALWAN-probe-lmt-blackhole distance=2 dst-address=\
     212.93.105.242/32
 add blackhole comment=DUALWAN-probe-lmt-public-blackhole distance=2 \
     dst-address=1.1.1.1/32
-/ipv6 dhcp-client
-add add-default-route=no comment="DUALWAN: LMT IPv6 prefix delegation" \
-    interface=ether3 pool-name=LMT-ipv6 pool-prefix-length=64 request=prefix \
-    use-peer-dns=no
 /ipv6 firewall address-list
 add address=::/128 comment="defconf: unspecified address" list=bad_ipv6
 add address=::1/128 comment="defconf: lo" list=bad_ipv6
