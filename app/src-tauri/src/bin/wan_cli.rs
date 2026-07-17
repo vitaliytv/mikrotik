@@ -4,7 +4,7 @@
 // tools the in-app chat panel uses, without needing Tauri's invoke() bridge.
 // Usage: wan-cli <tool-name> [json-input]
 
-use wan_monitor_app_lib::{read_router_log_impl, read_wan_speed_impl};
+use wan_monitor_app_lib::{read_router_diagnostic_impl, read_router_log_impl, read_wan_speed_impl};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -12,6 +12,7 @@ fn main() {
     let result: Result<String, String> = match tool {
         "read_wan_speed" => read_wan_speed_impl(),
         "read_router_log" => read_router_log_impl(),
+        "read_router_diagnostic" => read_router_diagnostic_impl(),
         other => Err(format!("Unknown tool: {}", other)),
     };
 

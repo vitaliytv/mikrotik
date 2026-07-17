@@ -24,6 +24,113 @@ header {
   gap: 4px;
 }
 
+.diagnostic-mode {
+  margin-top: 20px;
+  border-top: 1px solid #2a2a3e;
+  border-bottom: 1px solid #2a2a3e;
+  padding: 16px 0;
+}
+
+.diagnostic-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.diagnostic-cell {
+  min-height: 82px;
+  border-left: 3px solid #64748b;
+  background: #171725;
+  padding: 12px;
+}
+
+.diagnostic-cell.healthy {
+  border-left-color: #34d399;
+}
+
+.diagnostic-cell.failed {
+  border-left-color: #f87171;
+}
+
+.diagnostic-cell.unknown {
+  border-left-color: #f59e0b;
+}
+
+.diagnostic-cell strong,
+.diagnostic-cell small,
+.diagnostic-label {
+  display: block;
+}
+
+.diagnostic-cell strong {
+  margin: 5px 0;
+  color: #eee;
+  font-size: 14px;
+}
+
+.diagnostic-label,
+.diagnostic-cell small {
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.diagnostic-error {
+  margin-top: 10px;
+  color: #fca5a5;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-history {
+  margin-top: 12px;
+}
+
+.diagnostic-report {
+  margin-top: 12px;
+  border-top: 1px solid #2a2a3e;
+  padding-top: 10px;
+}
+
+.diagnostic-report-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.diagnostic-report textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 220px;
+  margin-top: 8px;
+  resize: vertical;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: #10101b;
+  color: #d1d5db;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.repair-dialog {
+  max-width: 460px;
+}
+
+table.events tr.down td {
+  color: #f87171;
+}
+
+table.events tr.up td {
+  color: #34d399;
+}
+
 /* Higher specificity than plain `h1` so this reliably beats Quasar's global
    h1 reset (6rem) regardless of CSS bundling/load order in production. */
 body h1 {
@@ -161,12 +268,10 @@ table.events th {
   border-bottom: 1px solid #2a2a3e;
 }
 
-table.events tr.down td {
-  color: #f87171;
-}
-
-table.events tr.up td {
-  color: #34d399;
+@media (max-width: 700px) {
+  .diagnostic-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .raw-log {
@@ -209,4 +314,3 @@ table.events tr.up td {
   white-space: pre-wrap;
   word-break: break-all;
 }
-

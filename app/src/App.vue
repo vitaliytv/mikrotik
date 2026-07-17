@@ -4,6 +4,98 @@
     <q-btn flat dense round icon="sym_o_history" title="Журнал запитів агента" @click="auditOpen = true" />
   </div>
 
+  <section class="diagnostic-mode" aria-label="Діагностичний режим">
+    <header>
+      <div>
+        <h1>Діагностичний режим</h1>
+        <div class="controls"><span>{{ diagnosticStatus }}</span></div>
+      </div>
+      <div class="diagnostic-actions">
+        <q-btn
+          dense
+          unelevated
+          :color="diagnosticRunning ? 'negative' : 'primary'"
+          :icon="diagnosticRunning ? 'sym_o_pause_circle' : 'sym_o_monitor_heart'"
+          :label="diagnosticRunning ? 'Зупинити' : 'Почати очікування'"
+          @click="toggleDiagnostic"
+        >
+          <q-tooltip>{{ diagnosticRunning ? 'Зупинити перевірку кожні 5 секунд' : 'Перевіряти RouterOS кожні 5 секунд' }}</q-tooltip>
+        </q-btn>
+        <q-btn flat dense round icon="sym_o_refresh" title="Перевірити зараз" @click="pollDiagnostic" />
+        <q-btn
+          dense
+          outline
+          icon="sym_o_summarize"
+          label="Зібрати звіт"
+          :loading="reportBusy"
+          @click="captureDiagnosticReport()"
+        >
+          <q-tooltip>Зберегти повний read-only звіт для передачі в чат</q-tooltip>
+        </q-btn>
+        <q-btn
+          dense
+          outline
+          color="warning"
+          icon="sym_o_build"
+          label="Виправити scheduler"
+          :disable="!diagnosticSnapshot?.api_reachable"
+          @click="repairDialog = true"
+        >
+          <q-tooltip>Виправити підрахунок timeout у DUALWAN-health</q-tooltip>
+        </q-btn>
+      </div>
+    </header>
+    <div class="diagnostic-grid">
+      <div :class="['diagnostic-cell', diagnosticLevel]">
+        <span class="diagnostic-label">RouterOS API</span>
+        <strong>{{ diagnosticSnapshot?.api_reachable ? 'Доступний' : 'Недоступний' }}</strong>
+        <small>{{ diagnosticSnapshot?.endpoint || 'Очікую перевірку' }}</small>
+      </div>
+      <div class="diagnostic-cell">
+        <span class="diagnostic-label">Контролер</span>
+        <strong>{{ diagnosticControllerLabel }}</strong>
+        <small>{{ diagnosticSchedulerLabel }}</small>
+      </div>
+      <div class="diagnostic-cell">
+        <span class="diagnostic-label">Остання перевірка</span>
+        <strong>{{ diagnosticLastChecked }}</strong>
+        <small>{{ diagnosticLatencyLabel }}</small>
+      </div>
+    </div>
+    <div v-if="diagnosticError" class="diagnostic-error">{{ diagnosticError }}</div>
+    <table class="events diagnostic-history">
+      <thead>
+        <tr><th>Час</th><th>Подія</th><th>Деталі</th></tr>
+      </thead>
+      <tbody>
+        <tr v-for="entry in diagnosticHistory" :key="entry.id" :class="entry.level">
+          <td>{{ entry.time }}</td><td>{{ entry.label }}</td><td>{{ entry.detail }}</td>
+        </tr>
+        <tr v-if="!diagnosticHistory.length"><td colspan="3">Подій ще немає.</td></tr>
+      </tbody>
+    </table>
+    <div v-if="diagnosticReport" class="diagnostic-report">
+      <div class="diagnostic-report-toolbar">
+        <span>Автономний звіт для чату</span>
+        <q-btn flat dense icon="sym_o_content_copy" label="Скопіювати" @click="copyDiagnosticReport" />
+      </div>
+      <textarea ref="diagnosticReportEl" readonly :value="diagnosticReport" aria-label="Автономний звіт діагностики"></textarea>
+    </div>
+  </section>
+
+  <q-dialog v-model="repairDialog">
+    <q-card class="repair-dialog">
+      <q-card-section>
+        <div class="text-subtitle1">Виправити DUALWAN-health?</div>
+        <div class="text-body2">Будуть змінені лише два ping-лічильники: timeout більше не рахуватиметься як успішна відповідь. Маршрути та DHCP leases зараз не змінюються.</div>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn flat label="Скасувати" v-close-popup />
+        <q-btn color="warning" unelevated label="Виправити" :loading="repairBusy" @click="repairFailoverPing" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
   <header style="margin-top: 28px">
     <h1>Трафік на WAN-інтерфейсах (середнє за 1 хв)</h1>
     <div class="controls">
@@ -65,12 +157,14 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from "vue";
+import { useQuasar } from "quasar";
 import { AgentDialog, AuditDialog } from "@7n/tauri-components/components";
 import { useUpdater } from "@7n/tauri-components/vue";
 import { useAgent } from "./composables/use-agent.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const $q = useQuasar();
 
 useUpdater();
 
@@ -117,6 +211,241 @@ const rawLogText = computed(() =>
 const recentEvents = computed(() => events.value.slice(-300).reverse());
 
 let refreshTimer = null;
+let diagnosticTimer = null;
+let diagnosticBusy = false;
+const DIAGNOSTIC_INTERVAL_MS = 5000;
+const DIAGNOSTIC_HISTORY_KEY = "mymikrotik.diagnostic-history.v1";
+const DIAGNOSTIC_ACTIVE_KEY = "mymikrotik.diagnostic-active.v1";
+
+const diagnosticRunning = ref(localStorage.getItem(DIAGNOSTIC_ACTIVE_KEY) === "true");
+const diagnosticSnapshot = ref(null);
+const diagnosticError = ref("");
+const diagnosticHistory = ref(loadDiagnosticHistory());
+const diagnosticReportEl = ref(null);
+const diagnosticReport = ref(localStorage.getItem("mymikrotik.diagnostic-report.v1") || "");
+const reportBusy = ref(false);
+const repairDialog = ref(false);
+const repairBusy = ref(false);
+
+function loadDiagnosticHistory() {
+  try {
+    const value = JSON.parse(localStorage.getItem(DIAGNOSTIC_HISTORY_KEY) || "[]");
+    return Array.isArray(value) ? value.slice(0, 80) : [];
+  } catch {
+    return [];
+  }
+}
+
+const diagnosticLevel = computed(() => {
+  if (!diagnosticSnapshot.value) return "unknown";
+  return diagnosticSnapshot.value.api_reachable ? "healthy" : "failed";
+});
+
+const diagnosticStatus = computed(() => {
+  if (diagnosticRunning.value) return "Очікування активне: перевірка RouterOS кожні 5 секунд";
+  return "Режим очікування зупинений";
+});
+
+const diagnosticControllerLabel = computed(() => {
+  const snapshot = diagnosticSnapshot.value;
+  if (!snapshot?.api_reachable) return "—";
+  return snapshot.controller_state ? `Primary: ${snapshot.controller_state.toUpperCase()}` : "State невідомий";
+});
+
+const diagnosticSchedulerLabel = computed(() => {
+  const snapshot = diagnosticSnapshot.value;
+  if (!snapshot?.api_reachable) return "Немає з'єднання з RouterOS";
+  const enabled = snapshot.scheduler_enabled === "true" ? "scheduler активний" : "scheduler неактивний";
+  return `${enabled}, запусків: ${snapshot.scheduler_runs || "?"}`;
+});
+
+const diagnosticLastChecked = computed(() => {
+  const checkedAt = diagnosticSnapshot.value?.checked_at;
+  return checkedAt ? fmtClock(new Date(checkedAt)) : "—";
+});
+
+const diagnosticLatencyLabel = computed(() => {
+  const latency = diagnosticSnapshot.value?.latency_ms;
+  return latency == null ? "—" : `API ${latency} ms`;
+});
+
+function addDiagnosticEvent(level, label, detail) {
+  const entry = { id: `${Date.now()}-${Math.random()}`, time: nowIsoLabel(), level, label, detail };
+  diagnosticHistory.value = [entry, ...diagnosticHistory.value].slice(0, 80);
+  localStorage.setItem(DIAGNOSTIC_HISTORY_KEY, JSON.stringify(diagnosticHistory.value));
+}
+
+function nowIsoLabel() {
+  const now = new Date();
+  return `${now.toLocaleDateString("sv-SE")} ${fmtClock(now)}`;
+}
+
+function snapshotKey(snapshot) {
+  if (!snapshot.api_reachable) return `failed:${snapshot.error}`;
+  return `ok:${snapshot.controller_state}:${snapshot.scheduler_enabled}:${snapshot.script_invalid}`;
+}
+
+async function pollDiagnostic() {
+  if (diagnosticBusy) return;
+  diagnosticBusy = true;
+  const previous = diagnosticSnapshot.value;
+  try {
+    const snapshot = JSON.parse(await invoke("read_router_diagnostic"));
+    diagnosticSnapshot.value = snapshot;
+    diagnosticError.value = snapshot.error || "";
+    if (snapshotKey(previous || {}) !== snapshotKey(snapshot)) {
+      if (snapshot.api_reachable) {
+        addDiagnosticEvent("up", "RouterOS доступний", `${snapshot.identity || snapshot.endpoint}; primary ${snapshot.controller_state || "?"}`);
+        if (previous && !previous.api_reachable) {
+          $q.notify({ type: "positive", message: "RouterOS API відновився", position: "top" });
+          loadRouterLog();
+          await captureDiagnosticReport(true);
+        }
+      } else {
+        addDiagnosticEvent("down", "RouterOS недоступний", `${snapshot.endpoint}: ${snapshot.error || "невідома помилка"}`);
+        $q.notify({ type: "negative", message: "Втрачено доступ до RouterOS API", position: "top", timeout: 7000 });
+      }
+    }
+  } catch (error) {
+    const snapshot = { api_reachable: false, endpoint: "RouterOS API", error: String(error), checked_at: new Date().toISOString() };
+    diagnosticSnapshot.value = snapshot;
+    diagnosticError.value = snapshot.error;
+    if (!previous || previous.api_reachable) {
+      addDiagnosticEvent("down", "Помилка діагностики", snapshot.error);
+      $q.notify({ type: "negative", message: "Не вдалося виконати діагностику RouterOS", position: "top", timeout: 7000 });
+    }
+  } finally {
+    diagnosticBusy = false;
+  }
+}
+
+function reportLines(snapshot, routerData, routerError) {
+  const lines = [
+    "# MyMikroTik diagnostic report",
+    `Generated: ${nowIsoLabel()}`,
+    "",
+    "## RouterOS API",
+    `- Endpoint: ${snapshot.endpoint || "?"}`,
+    `- Reachable: ${snapshot.api_reachable ? "yes" : "no"}`,
+    `- Latency: ${snapshot.latency_ms == null ? "?" : `${snapshot.latency_ms} ms`}`,
+    `- Identity: ${snapshot.identity || "?"}`,
+    `- Error: ${snapshot.error || "none"}`,
+    "",
+    "## Controller",
+    `- State: ${snapshot.controller_state || "unknown"}`,
+    `- Scheduler: ${snapshot.scheduler_enabled || "unknown"}; runs: ${snapshot.scheduler_runs || "?"}`,
+    `- Scheduler last started: ${snapshot.scheduler_last_started || "?"}`,
+    `- Scheduler on-event: ${snapshot.scheduler_on_event || "?"}`,
+    `- Scheduler policy: ${snapshot.scheduler_policy || "?"}`,
+    `- DUALWAN-health invalid: ${snapshot.script_invalid || "unknown"}`,
+    `- DUALWAN-health runs: ${snapshot.script_runs || "?"}; last started: ${snapshot.script_last_started || "?"}`,
+    `- dwLmtBad: ${snapshot.lmt_bad_cycles || "?"}; dwLmtGood: ${snapshot.lmt_good_cycles || "?"}; last decision: ${snapshot.last_decision || "?"}`,
+    `- Active script jobs: ${(snapshot.script_jobs || []).join(", ") || "none"}`,
+  ];
+  if (routerError) {
+    lines.push("", "## Router data", `- Unavailable: ${routerError}`);
+  } else if (routerData) {
+    lines.push("", "## DHCP leases");
+    for (const lease of routerData.dhcp || []) {
+      lines.push(`- ${lease.channel}: ${lease.status || "?"}; ${lease.address || "no address"}; gw ${lease.gateway || "?"}; routes ${lease.default_route_tables || "?"}`);
+    }
+    lines.push("", "## Default routes");
+    for (const route of routerData.routes || []) {
+      lines.push(`- ${route.channel}/${route.table}: distance ${route.distance || "?"}; active ${route.active || "false"}; gw ${route.gateway || "?"}`);
+    }
+    lines.push("", "## LMT probes");
+    for (const probe of routerData.probes || []) {
+      lines.push(`- ${probe.target}: ${probe.received || "0"}/3; loss ${probe.loss_percent || "?"}%; avg ${probe.avg_rtt || "?"}`);
+    }
+    const important = (routerData.raw_log || [])
+      .filter((entry) => /DUALWAN|scheduler.*failed|syntax error|bad parameter|dhcp.*error/i.test(entry.message || ""))
+      .slice(-30);
+    lines.push("", "## Relevant RouterOS log");
+    lines.push(...(important.length ? important.map((entry) => `- ${entry.time} [${entry.topics}] ${entry.message}`) : ["- No matching records"]));
+  }
+  lines.push("", "## Local diagnostic history");
+  lines.push(...(diagnosticHistory.value.slice(0, 20).map((entry) => `- ${entry.time}: ${entry.label}; ${entry.detail}`) || ["- No local events"]));
+  return lines.join("\n");
+}
+
+async function captureDiagnosticReport(quiet = false) {
+  if (reportBusy.value) return;
+  reportBusy.value = true;
+  try {
+    const snapshot = diagnosticSnapshot.value || JSON.parse(await invoke("read_router_diagnostic"));
+    let routerData = null;
+    let routerError = "";
+    if (snapshot.api_reachable) {
+      try {
+        routerData = JSON.parse(await invoke("read_router_log"));
+        if (routerData.error) routerError = routerData.error;
+      } catch (error) {
+        routerError = String(error);
+      }
+    } else {
+      routerError = snapshot.error || "RouterOS API недоступний";
+    }
+    diagnosticReport.value = reportLines(snapshot, routerData, routerError);
+    localStorage.setItem("mymikrotik.diagnostic-report.v1", diagnosticReport.value);
+    if (!quiet) $q.notify({ type: "positive", message: "Діагностичний звіт збережено локально", position: "top" });
+  } catch (error) {
+    if (!quiet) $q.notify({ type: "negative", message: `Не вдалося зібрати звіт: ${error}`, position: "top" });
+  } finally {
+    reportBusy.value = false;
+  }
+}
+
+async function copyDiagnosticReport() {
+  if (!diagnosticReport.value) return;
+  try {
+    await navigator.clipboard.writeText(diagnosticReport.value);
+  } catch {
+    diagnosticReportEl.value?.focus();
+    diagnosticReportEl.value?.select();
+    document.execCommand("copy");
+  }
+  $q.notify({ type: "positive", message: "Звіт скопійовано в буфер", position: "top" });
+}
+
+async function repairFailoverPing() {
+  repairBusy.value = true;
+  try {
+    const message = await invoke("repair_failover_ping");
+    repairDialog.value = false;
+    addDiagnosticEvent("up", "Scheduler виправлено", message);
+    $q.notify({ type: "positive", message, position: "top", timeout: 7000 });
+    await pollDiagnostic();
+    setTimeout(() => {
+      pollDiagnostic();
+      captureDiagnosticReport(true);
+      loadRouterLog();
+    }, 16000);
+  } catch (error) {
+    $q.notify({ type: "negative", message: `Не вдалося виправити scheduler: ${error}`, position: "top", timeout: 9000 });
+  } finally {
+    repairBusy.value = false;
+  }
+}
+
+function startDiagnostic() {
+  if (diagnosticTimer) clearInterval(diagnosticTimer);
+  diagnosticRunning.value = true;
+  localStorage.setItem(DIAGNOSTIC_ACTIVE_KEY, "true");
+  pollDiagnostic();
+  diagnosticTimer = setInterval(pollDiagnostic, DIAGNOSTIC_INTERVAL_MS);
+}
+
+function stopDiagnostic() {
+  if (diagnosticTimer) clearInterval(diagnosticTimer);
+  diagnosticTimer = null;
+  diagnosticRunning.value = false;
+  localStorage.setItem(DIAGNOSTIC_ACTIVE_KEY, "false");
+}
+
+function toggleDiagnostic() {
+  if (diagnosticRunning.value) stopDiagnostic();
+  else startDiagnostic();
+}
 
 // ---------- пасивний моніторинг трафіку (кожні 15с, поки застосунок відкритий) ----------
 
@@ -371,9 +700,12 @@ onMounted(() => {
   listen("wan-sample", (event) => onWanSample(event.payload));
   loadRouterLog();
   refreshTimer = setInterval(loadRouterLog, 60000);
+  pollDiagnostic();
+  if (diagnosticRunning.value) startDiagnostic();
 });
 
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer);
+  if (diagnosticTimer) clearInterval(diagnosticTimer);
 });
 </script>
