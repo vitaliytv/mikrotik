@@ -1,6 +1,6 @@
 mod routeros;
 
-use routeros::{connect_and_login, read_traffic, ApiRos, PROBE_LMT_PUBLIC, PROBE_ZTE};
+use routeros::{connect_and_login, load_config, read_traffic, ApiRos, PROBE_LMT_PUBLIC, PROBE_ZTE};
 use serde::Serialize;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -80,6 +80,198 @@ pub fn read_wan_speed_impl() -> Result<String, String> {
 #[tauri::command]
 fn read_wan_speed() -> Result<String, String> {
     read_wan_speed_impl()
+}
+
+// ---------- швидка діагностика доступності RouterOS ----------
+
+#[derive(Serialize)]
+struct DiagnosticSnapshot {
+    checked_at: String,
+    endpoint: String,
+    api_reachable: bool,
+    latency_ms: Option<u128>,
+    error: String,
+    identity: String,
+    scheduler_enabled: String,
+    scheduler_runs: String,
+    scheduler_last_started: String,
+    scheduler_on_event: String,
+    scheduler_policy: String,
+    controller_state: String,
+    lmt_bad_cycles: String,
+    lmt_good_cycles: String,
+    last_decision: String,
+    script_invalid: String,
+    script_runs: String,
+    script_last_started: String,
+    script_jobs: Vec<String>,
+}
+
+pub fn read_router_diagnostic_impl() -> Result<String, String> {
+    let checked_at = now_iso();
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(error) => {
+            return serde_json::to_string(&DiagnosticSnapshot {
+                checked_at,
+                endpoint: "192.168.88.1:8728".to_string(),
+                api_reachable: false,
+                latency_ms: None,
+                error,
+                identity: String::new(),
+                scheduler_enabled: "unknown".to_string(),
+                scheduler_runs: String::new(),
+                scheduler_last_started: String::new(),
+                scheduler_on_event: String::new(),
+                scheduler_policy: String::new(),
+                controller_state: "unknown".to_string(),
+                lmt_bad_cycles: String::new(),
+                lmt_good_cycles: String::new(),
+                last_decision: String::new(),
+                script_invalid: "unknown".to_string(),
+                script_runs: String::new(),
+                script_last_started: String::new(),
+                script_jobs: Vec::new(),
+            })
+            .map_err(|e| e.to_string());
+        }
+    };
+    let endpoint = format!("{}:8728", config.host);
+    let started = std::time::Instant::now();
+    let mut api = match connect_and_login(Duration::from_secs(3)) {
+        Ok(api) => api,
+        Err(error) => {
+            return serde_json::to_string(&DiagnosticSnapshot {
+                checked_at,
+                endpoint,
+                api_reachable: false,
+                latency_ms: Some(started.elapsed().as_millis()),
+                error,
+                identity: String::new(),
+                scheduler_enabled: "unknown".to_string(),
+                scheduler_runs: String::new(),
+                scheduler_last_started: String::new(),
+                scheduler_on_event: String::new(),
+                scheduler_policy: String::new(),
+                controller_state: "unknown".to_string(),
+                lmt_bad_cycles: String::new(),
+                lmt_good_cycles: String::new(),
+                last_decision: String::new(),
+                script_invalid: "unknown".to_string(),
+                script_runs: String::new(),
+                script_last_started: String::new(),
+                script_jobs: Vec::new(),
+            })
+            .map_err(|e| e.to_string());
+        }
+    };
+
+    let identity = api
+        .talk(&["/system/identity/print"])
+        .ok()
+        .into_iter()
+        .flatten()
+        .find_map(|(reply, attrs)| (reply == "!re").then(|| attrs.get("=name").cloned()).flatten())
+        .unwrap_or_default();
+    let globals: std::collections::HashMap<String, String> = api
+        .talk(&["/system/script/environment/print"])
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|(reply, attrs)| {
+            (reply == "!re").then(|| Some((attrs.get("=name")?.clone(), attrs.get("=value").cloned().unwrap_or_default())))?
+        })
+        .collect();
+    let mut snapshot = DiagnosticSnapshot {
+        checked_at,
+        endpoint,
+        api_reachable: true,
+        latency_ms: Some(started.elapsed().as_millis()),
+        error: String::new(),
+        identity,
+        scheduler_enabled: "missing".to_string(),
+        scheduler_runs: String::new(),
+        scheduler_last_started: String::new(),
+        scheduler_on_event: String::new(),
+        scheduler_policy: String::new(),
+        controller_state: globals.get("dwState").cloned().unwrap_or_else(|| "unknown".to_string()),
+        lmt_bad_cycles: globals.get("dwLmtBad").cloned().unwrap_or_default(),
+        lmt_good_cycles: globals.get("dwLmtGood").cloned().unwrap_or_default(),
+        last_decision: globals.get("dwLastDecision").cloned().unwrap_or_default(),
+        script_invalid: "missing".to_string(),
+        script_runs: String::new(),
+        script_last_started: String::new(),
+        script_jobs: Vec::new(),
+    };
+    if let Ok(rows) = api.talk(&["/system/scheduler/print"]) {
+        for (reply, attrs) in rows {
+            if reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health-every-5s") {
+                snapshot.scheduler_enabled = (!matches!(attrs.get("=disabled").map(String::as_str), Some("true"))).to_string();
+                snapshot.scheduler_runs = attrs.get("=run-count").cloned().unwrap_or_default();
+                snapshot.scheduler_last_started = attrs.get("=last-started").cloned().unwrap_or_default();
+                snapshot.scheduler_on_event = attrs.get("=on-event").cloned().unwrap_or_default();
+                snapshot.scheduler_policy = attrs.get("=policy").cloned().unwrap_or_default();
+            }
+        }
+    }
+    if let Ok(rows) = api.talk(&["/system/script/print"]) {
+        for (reply, attrs) in rows {
+            if reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health") {
+                snapshot.script_invalid = attrs.get("=invalid").cloned().unwrap_or_default();
+                snapshot.script_runs = attrs.get("=run-count").cloned().unwrap_or_default();
+                snapshot.script_last_started = attrs.get("=last-started").cloned().unwrap_or_default();
+            }
+        }
+    }
+    if let Ok(rows) = api.talk(&["/system/script/job/print"]) {
+        snapshot.script_jobs = rows
+            .into_iter()
+            .filter_map(|(reply, attrs)| (reply == "!re").then(|| attrs.get("=script").cloned()).flatten())
+            .collect();
+    }
+    serde_json::to_string(&snapshot).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_router_diagnostic() -> Result<String, String> {
+    read_router_diagnostic_impl()
+}
+
+/// Repairs the RouterOS `as-value` ping accounting bug in the current
+/// DUALWAN-health source. The UI requires an explicit confirmation before it
+/// invokes this write operation.
+#[tauri::command]
+fn repair_failover_ping() -> Result<String, String> {
+    let mut api = connect_and_login(Duration::from_secs(15))?;
+    let script = api
+        .talk(&["/system/script/print"])
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find_map(|(reply, attrs)| {
+            (reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health"))
+                .then_some(attrs)
+        })
+        .ok_or_else(|| "DUALWAN-health не знайдено".to_string())?;
+    let id = script.get("=.id").cloned().ok_or_else(|| "ID DUALWAN-health відсутній".to_string())?;
+    let source = script.get("=source").cloned().ok_or_else(|| "source DUALWAN-health відсутній".to_string())?;
+    let old_edge = ":foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={ :set edgeReceived ($edgeReceived + 1) }";
+    let old_public = ":foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={ :set publicReceived ($publicReceived + 1) }";
+    let new_edge = ":foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={\n  :if (($reply->\"status\") != \"timeout\") do={ :set edgeReceived ($edgeReceived + 1) }\n}";
+    let new_public = ":foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={\n  :if (($reply->\"status\") != \"timeout\") do={ :set publicReceived ($publicReceived + 1) }\n}";
+    if source.contains(new_edge) && source.contains(new_public) {
+        return Ok("Ping accounting already repaired".to_string());
+    }
+    let updated = source.replace(old_edge, new_edge).replace(old_public, new_public);
+    if updated == source {
+        return Err("Невідома версія DUALWAN-health: автоматичне виправлення скасовано".to_string());
+    }
+    let result = api
+        .talk(&["/system/script/set", &format!("=.id={id}"), &format!("=source={updated}")])
+        .map_err(|e| e.to_string())?;
+    if let Some((_, attrs)) = result.iter().find(|(reply, _)| reply == "!trap") {
+        return Err(attrs.get("=message").cloned().unwrap_or_else(|| "RouterOS відхилив source".to_string()));
+    }
+    Ok("Ping accounting repaired; scheduler will re-evaluate LMT within 15 seconds".to_string())
 }
 
 // ---------- стан router-local dual-WAN controller ----------
@@ -356,7 +548,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log])
+        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, repair_failover_ping])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
