@@ -43,6 +43,9 @@
         >
           <q-tooltip>Виправити підрахунок timeout у DUALWAN-health</q-tooltip>
         </q-btn>
+        <q-btn dense unelevated color="negative" icon="sym_o_emergency" label="Зафіксувати BITE" :disable="!diagnosticSnapshot?.api_reachable" @click="holdBiteDialog = true">
+          <q-tooltip>Зробити BITE primary і зупинити scheduler</q-tooltip>
+        </q-btn>
       </div>
     </header>
     <div class="diagnostic-grid">
@@ -92,6 +95,19 @@
       <q-card-actions align="right">
         <q-btn flat label="Скасувати" v-close-popup />
         <q-btn color="warning" unelevated label="Виправити" :loading="repairBusy" @click="repairFailoverPing" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
+  <q-dialog v-model="holdBiteDialog">
+    <q-card class="repair-dialog">
+      <q-card-section>
+        <div class="text-subtitle1">Зафіксувати BITE як primary?</div>
+        <div class="text-body2">BITE отримає main distance 1, LMT стане резервом, а scheduler буде вимкнений. Це аварійна стабілізація, щоб прибрати flapping.</div>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn flat label="Скасувати" v-close-popup />
+        <q-btn color="negative" unelevated label="Зафіксувати BITE" :loading="holdBiteBusy" @click="holdBitePrimary" />
       </q-card-actions>
     </q-card>
   </q-dialog>
@@ -226,6 +242,8 @@ const diagnosticReport = ref(localStorage.getItem("mymikrotik.diagnostic-report.
 const reportBusy = ref(false);
 const repairDialog = ref(false);
 const repairBusy = ref(false);
+const holdBiteDialog = ref(false);
+const holdBiteBusy = ref(false);
 
 function loadDiagnosticHistory() {
   try {
@@ -424,6 +442,23 @@ async function repairFailoverPing() {
     $q.notify({ type: "negative", message: `Не вдалося виправити scheduler: ${error}`, position: "top", timeout: 9000 });
   } finally {
     repairBusy.value = false;
+  }
+}
+
+async function holdBitePrimary() {
+  holdBiteBusy.value = true;
+  try {
+    const message = await invoke("hold_bite_primary");
+    holdBiteDialog.value = false;
+    addDiagnosticEvent("down", "BITE зафіксовано primary", message);
+    $q.notify({ type: "warning", message, position: "top", timeout: 9000 });
+    await pollDiagnostic();
+    await captureDiagnosticReport(true);
+    await loadRouterLog();
+  } catch (error) {
+    $q.notify({ type: "negative", message: `Не вдалося зафіксувати BITE: ${error}`, position: "top", timeout: 9000 });
+  } finally {
+    holdBiteBusy.value = false;
   }
 }
 
