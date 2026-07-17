@@ -17,7 +17,7 @@
     "vite": "^8.1.4"
   },
   "dependencies": {
-    "@7n/tauri-components": "^0.10.0",
+    "@7n/tauri-components": "^0.11.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@quasar/extras": "^1.18.0",
     "@tauri-apps/api": "^2.11.0",
