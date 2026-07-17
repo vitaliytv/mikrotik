@@ -1,4 +1,4 @@
-# 2026-07-15 16:50:32 by RouterOS 7.23.1
+# 2026-07-17 13:45:53 by RouterOS 7.23.1
 # software id = 9DWX-CMV1
 #
 # model = C52iG-5HaxD2HaxD
@@ -77,9 +77,13 @@ add comment="LMT-primary dual-WAN health controller" \
     \n}\
     \n# Both LMT probe gateways follow its DHCP lease; BITE is blind reserve\
     \n:local edgeReceived 0\
-    \n:foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={ :set edgeReceived (\$edgeReceived + 1) }\
+    \n:foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={\
+    \n  :if ((\$reply->\"status\") != \"timeout\") do={ :set edgeReceived (\$edgeReceived + 1) }\
+    \n}\
     \n:local publicReceived 0\
-    \n:foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={ :set publicReceived (\$publicReceived + 1) }\
+    \n:foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={\
+    \n  :if ((\$reply->\"status\") != \"timeout\") do={ :set publicReceived (\$publicReceived + 1) }\
+    \n}\
     \n:local lmtGood ((\$edgeReceived >= 2) || (\$publicReceived >= 2))\
     \n:local lmtLossDegraded ((\$edgeReceived < 3) && (\$publicReceived < 3))\
     \n:local next \$dwState\
