@@ -7,7 +7,7 @@
   ],
   "type": "module",
   "devDependencies": {
-    "@nitra/cursor": "^14.33.0"
+    "@7n/rules": "^1.30.0"
   },
   "engines": {
     "bun": ">=1.3",
