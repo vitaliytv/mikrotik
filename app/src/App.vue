@@ -46,6 +46,9 @@
         <q-btn dense unelevated color="negative" icon="sym_o_emergency" label="Зафіксувати BITE" :disable="!diagnosticSnapshot?.api_reachable" @click="holdBiteDialog = true">
           <q-tooltip>Зробити BITE primary і зупинити scheduler</q-tooltip>
         </q-btn>
+        <q-btn dense unelevated color="positive" icon="sym_o_restart_alt" label="Відновити авто-перемикання" :disable="!diagnosticSnapshot?.api_reachable" @click="resumeFailoverDialog = true">
+          <q-tooltip>Повернути LMT як primary і знову увімкнути scheduler</q-tooltip>
+        </q-btn>
       </div>
     </header>
     <div class="diagnostic-grid">
@@ -108,6 +111,19 @@
       <q-card-actions align="right">
         <q-btn flat label="Скасувати" v-close-popup />
         <q-btn color="negative" unelevated label="Зафіксувати BITE" :loading="holdBiteBusy" @click="holdBitePrimary" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
+  <q-dialog v-model="resumeFailoverDialog">
+    <q-card class="repair-dialog">
+      <q-card-section>
+        <div class="text-subtitle1">Відновити автоматичне перемикання?</div>
+        <div class="text-body2">LMT знову стане primary (main/to_WAN1), BITE — primary лише для to_WAN2 як і раніше, і scheduler знову увімкнеться. Використовуйте лише коли LMT вже стабільний.</div>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn flat label="Скасувати" v-close-popup />
+        <q-btn color="positive" unelevated label="Відновити" :loading="resumeFailoverBusy" @click="resumeAutoFailover" />
       </q-card-actions>
     </q-card>
   </q-dialog>
@@ -244,6 +260,8 @@ const repairDialog = ref(false);
 const repairBusy = ref(false);
 const holdBiteDialog = ref(false);
 const holdBiteBusy = ref(false);
+const resumeFailoverDialog = ref(false);
+const resumeFailoverBusy = ref(false);
 
 function loadDiagnosticHistory() {
   try {
@@ -459,6 +477,23 @@ async function holdBitePrimary() {
     $q.notify({ type: "negative", message: `Не вдалося зафіксувати BITE: ${error}`, position: "top", timeout: 9000 });
   } finally {
     holdBiteBusy.value = false;
+  }
+}
+
+async function resumeAutoFailover() {
+  resumeFailoverBusy.value = true;
+  try {
+    const message = await invoke("resume_auto_failover");
+    resumeFailoverDialog.value = false;
+    addDiagnosticEvent("up", "Авто-перемикання відновлено", message);
+    $q.notify({ type: "positive", message, position: "top", timeout: 9000 });
+    await pollDiagnostic();
+    await captureDiagnosticReport(true);
+    await loadRouterLog();
+  } catch (error) {
+    $q.notify({ type: "negative", message: `Не вдалося відновити авто-перемикання: ${error}`, position: "top", timeout: 9000 });
+  } finally {
+    resumeFailoverBusy.value = false;
   }
 }
 
