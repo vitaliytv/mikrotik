@@ -300,6 +300,39 @@ fn hold_bite_primary() -> Result<String, String> {
     Ok("BITE is primary; DUALWAN scheduler paused to prevent LMT flapping".to_string())
 }
 
+/// Reverses `hold_bite_primary`: restores the original per-table route
+/// priorities (LMT primary for main/to_WAN1, BITE primary for to_WAN2 — not
+/// a plain mirror of the hold, `to_WAN2` prefers BITE by design even when LMT
+/// is primary overall) and re-enables the DUALWAN-health scheduler so the
+/// automatic failover resumes evaluating on its own.
+#[tauri::command]
+fn resume_auto_failover() -> Result<String, String> {
+    let mut api = connect_and_login(Duration::from_secs(15))?;
+    let scheduler_id = api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?.into_iter()
+        .find_map(|(reply, attrs)| (reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health-every-5s")).then(|| attrs.get("=.id").cloned()).flatten())
+        .ok_or_else(|| "DUALWAN scheduler не знайдено".to_string())?;
+    let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
+    let client_id = |name: &str| clients.iter().find_map(|(reply, attrs)| (reply == "!re" && attrs.get("=name").map(String::as_str) == Some(name)).then(|| attrs.get("=.id").cloned()).flatten());
+    let bite_id = client_id("client1").ok_or_else(|| "BITE DHCP client не знайдено".to_string())?;
+    let lmt_id = client_id("client2").ok_or_else(|| "LMT DHCP client не знайдено".to_string())?;
+
+    api.talk(&["/ip/dhcp-client/set", &format!("=.id={lmt_id}"), "=default-route-tables=main:1,to_WAN1:1,to_WAN2:2"]).map_err(|e| e.to_string())?;
+    api.talk(&["/ip/dhcp-client/set", &format!("=.id={bite_id}"), "=default-route-tables=main:2,to_WAN1:2,to_WAN2:1"]).map_err(|e| e.to_string())?;
+
+    let source = ":global dwState; :global dwLmtBad; :global dwLmtGood; :global dwLastDecision; :set dwState \"lmt\"; :set dwLmtBad 0; :set dwLmtGood 0; :set dwLastDecision \"lmt\"";
+    let _ = api.talk(&["/system/script/remove", "=numbers=DUALWAN-resume-lmt"]);
+    api.talk(&["/system/script/add", "=name=DUALWAN-resume-lmt", &format!("=source={source}")]).map_err(|e| e.to_string())?;
+    let run = api.talk(&["/system/script/run", "=number=DUALWAN-resume-lmt"]).map_err(|e| e.to_string())?;
+    let _ = api.talk(&["/system/script/remove", "=numbers=DUALWAN-resume-lmt"]);
+    if let Some((_, attrs)) = run.iter().find(|(reply, _)| reply == "!trap") {
+        return Err(attrs.get("=message").cloned().unwrap_or_else(|| "Не вдалося оновити state".to_string()));
+    }
+
+    api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=no"]).map_err(|e| e.to_string())?;
+
+    Ok("LMT is primary again; DUALWAN scheduler resumed automatic failover".to_string())
+}
+
 // ---------- стан router-local dual-WAN controller ----------
 
 #[derive(Serialize)]
@@ -574,7 +607,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, repair_failover_ping, hold_bite_primary])
+        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, repair_failover_ping, hold_bite_primary, resume_auto_failover])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
