@@ -8,7 +8,10 @@
   "type": "module",
   "devDependencies": {
     "@7n/mt": "^0.27.0",
-    "@7n/rules": "^1.32.2"
+    "@7n/rules": "^1.32.2",
+    "@7n/rules-ci-github": "^1.7.1",
+    "@7n/rules-lang-js": "^0.7.0",
+    "@7n/rules-lang-rust": "^0.6.0"
   },
   "engines": {
     "bun": ">=1.3",
