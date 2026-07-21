@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-07-21
+
+### Changed
+
+- Оновлено @7n/tauri-components до 0.13.9 — AgentDialog: лейбл моделі, видимість tier-селектора, продовження розмови при зміні агента, усунення гонки acp_spawn_agent/acp_prompt, коректна самоідентифікація моделі; fix(ci): changelog-release n-cursor замість стороннього @nitra/cursor
+
 ## [0.5.0] - 2026-07-20
 
 ### Added
