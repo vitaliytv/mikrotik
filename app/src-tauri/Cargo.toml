@@ -26,7 +26,7 @@ tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri-plugin-agent = { git = "https://github.com/nitra/tauri-components", rev = "75f557370cb6c1eb16e76c67a146676153024ee6" }
+tauri-plugin-agent = { git = "https://github.com/nitra/tauri-components", rev = "12371a0546faeeb6eec71bd7f9a06bc9eb6f0178" }
 tauri-plugin-mcp-bridge = "0.12.0"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
