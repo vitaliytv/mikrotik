@@ -511,7 +511,9 @@ fn read_probe(api: &mut ApiRos, channel: &str, address: &str) -> ProbeInfo {
 }
 
 pub fn read_router_log_impl() -> Result<String, String> {
-    let mut api = connect_and_login(Duration::from_secs(20))?;
+    // The UI retries unavailable RouterOS endpoints. Keep each attempt short
+    // so an offline router cannot make startup appear frozen.
+    let mut api = connect_and_login(Duration::from_secs(5))?;
 
     let state = controller_state(&mut api);
     let mut controller = ControllerInfo {

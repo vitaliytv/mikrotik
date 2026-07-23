@@ -262,8 +262,11 @@ const recentEvents = computed(() => events.value.slice(-300).reverse());
 
 let refreshTimer = null;
 let diagnosticTimer = null;
+let reconnectTimer = null;
 let diagnosticBusy = false;
+let routerLogBusy = false;
 const DIAGNOSTIC_INTERVAL_MS = 5000;
+const ROUTER_RECONNECT_INTERVAL_MS = 5000;
 const DIAGNOSTIC_HISTORY_KEY = "mymikrotik.diagnostic-history.v1";
 const DIAGNOSTIC_ACTIVE_KEY = "mymikrotik.diagnostic-active.v1";
 const WAN_TIMELINE_KEY = "mymikrotik.wan-timeline.v1";
@@ -273,6 +276,7 @@ const WAN_TIMELINE_HEARTBEAT_MS = 5 * 60 * 1000;
 const diagnosticRunning = ref(localStorage.getItem(DIAGNOSTIC_ACTIVE_KEY) === "true");
 const diagnosticSnapshot = ref(null);
 const diagnosticError = ref("");
+const reconnecting = ref(false);
 const diagnosticHistory = ref(loadDiagnosticHistory());
 const wanTimeline = ref(loadWanTimeline());
 const diagnosticReportEl = ref(null);
@@ -326,6 +330,7 @@ const diagnosticLevel = computed(() => {
 
 const diagnosticStatus = computed(() => {
   if (diagnosticRunning.value) return "Очікування активне: перевірка RouterOS кожні 5 секунд";
+  if (reconnecting.value) return "RouterOS недоступний: повторне підключення кожні 5 секунд";
   return "Режим очікування зупинений";
 });
 
@@ -368,6 +373,21 @@ function snapshotKey(snapshot) {
   return `ok:${snapshot.controller_state}:${snapshot.scheduler_enabled}:${snapshot.script_invalid}`;
 }
 
+function clearReconnectTimer() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  reconnecting.value = false;
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer || diagnosticRunning.value) return;
+  reconnecting.value = true;
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    await pollDiagnostic();
+  }, ROUTER_RECONNECT_INTERVAL_MS);
+}
+
 async function pollDiagnostic() {
   if (diagnosticBusy) return;
   diagnosticBusy = true;
@@ -377,6 +397,8 @@ async function pollDiagnostic() {
     diagnosticSnapshot.value = snapshot;
     diagnosticError.value = snapshot.error || "";
     recordWanTimeline(snapshot);
+    if (snapshot.api_reachable) clearReconnectTimer();
+    else scheduleReconnect();
     if (snapshotKey(previous || {}) !== snapshotKey(snapshot)) {
       if (snapshot.api_reachable) {
         addDiagnosticEvent("up", "RouterOS доступний", `${snapshot.identity || snapshot.endpoint}; primary ${snapshot.controller_state || "?"}`);
@@ -394,6 +416,7 @@ async function pollDiagnostic() {
     const snapshot = { api_reachable: false, endpoint: "RouterOS API", error: String(error), checked_at: new Date().toISOString() };
     diagnosticSnapshot.value = snapshot;
     diagnosticError.value = snapshot.error;
+    scheduleReconnect();
     if (!previous || previous.api_reachable) {
       addDiagnosticEvent("down", "Помилка діагностики", snapshot.error);
       $q.notify({ type: "negative", message: "Не вдалося виконати діагностику RouterOS", position: "top", timeout: 7000 });
@@ -870,6 +893,8 @@ function renderQualityChart(evs) {
 }
 
 async function loadRouterLog() {
+  if (routerLogBusy) return;
+  routerLogBusy = true;
   routerStatus.value = "Читаю лог роутера...";
   try {
     const raw = await invoke("read_router_log");
@@ -888,7 +913,9 @@ async function loadRouterLog() {
     const controller = data.controller || {};
     routerStatus.value = `scheduler ${controller.scheduler_enabled === "true" ? "активний" : "недоступний"} | ${controller.interval || "?"} | primary: ${(controller.state || "?").toUpperCase()} | запусків: ${controller.scheduler_runs || "?"}`;
   } catch (e) {
-    routerStatus.value = `Помилка: ${e}`;
+    routerStatus.value = `RouterOS недоступний. Повторне підключення: ${e}`;
+  } finally {
+    routerLogBusy = false;
   }
 }
 
@@ -913,5 +940,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer);
   if (diagnosticTimer) clearInterval(diagnosticTimer);
+  if (reconnectTimer) clearTimeout(reconnectTimer);
 });
 </script>
