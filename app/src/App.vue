@@ -49,8 +49,8 @@
         <q-btn dense unelevated color="positive" icon="sym_o_restart_alt" label="Увімкнути sticky авто" :disable="!diagnosticSnapshot?.api_reachable" @click="resumeFailoverDialog = true">
           <q-tooltip>LMT стартує primary; перевіряється тільки активний WAN, без auto-failback</q-tooltip>
         </q-btn>
-        <q-btn dense outline color="warning" icon="sym_o_swap_horiz" label="Наступний WAN" :disable="!diagnosticSnapshot?.api_reachable" @click="forceNextDialog = true">
-          <q-tooltip>Негайно зробити резервний WAN primary без перевірки</q-tooltip>
+        <q-btn dense outline color="warning" icon="sym_o_swap_horiz" :label="`Наступний: ${nextWanLabel}`" :disable="!diagnosticSnapshot?.api_reachable" @click="forceNextDialog = true">
+          <q-tooltip>{{ `Негайно зробити ${nextWanLabel} primary без перевірки` }}</q-tooltip>
         </q-btn>
       </div>
     </header>
@@ -134,12 +134,12 @@
   <q-dialog v-model="forceNextDialog">
     <q-card class="repair-dialog">
       <q-card-section>
-        <div class="text-subtitle1">Перемкнути на наступний WAN?</div>
-        <div class="text-body2">Поточний primary буде змінено на інший WAN негайно, без перевірки його доступності. Sticky scheduler після цього контролюватиме новий primary.</div>
+        <div class="text-subtitle1">Перемкнути на {{ nextWanLabel }}?</div>
+        <div class="text-body2">{{ nextWanLabel }} негайно стане primary без перевірки його доступності. Sticky scheduler після цього контролюватиме новий primary.</div>
       </q-card-section>
       <q-card-actions align="right">
         <q-btn flat label="Скасувати" v-close-popup />
-        <q-btn color="warning" unelevated label="Перемкнути" :loading="forceNextBusy" @click="forceNextWan" />
+        <q-btn color="warning" unelevated :label="`На ${nextWanLabel}`" :loading="forceNextBusy" @click="forceNextWan" />
       </q-card-actions>
     </q-card>
   </q-dialog>
@@ -338,6 +338,13 @@ const diagnosticControllerLabel = computed(() => {
   const snapshot = diagnosticSnapshot.value;
   if (!snapshot?.api_reachable) return "—";
   return snapshot.controller_state ? `Primary: ${snapshot.controller_state.toUpperCase()}` : "State невідомий";
+});
+
+const nextWanLabel = computed(() => {
+  const state = diagnosticSnapshot.value?.controller_state?.toLowerCase();
+  if (state === "lmt") return "BITE";
+  if (state === "bite") return "LMT";
+  return "інший WAN";
 });
 
 const diagnosticSchedulerLabel = computed(() => {
