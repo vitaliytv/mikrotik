@@ -7,6 +7,87 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MONITOR_INTERVAL: Duration = Duration::from_secs(15);
 
+const STICKY_FAILOVER_SOURCE: &str = r#":global dwState
+:global dwActiveBad
+:global dwLastDecision
+
+:if ([:typeof $dwState] = "nothing") do={ :set dwState "lmt" }
+:if ([:typeof $dwActiveBad] = "nothing") do={ :set dwActiveBad 0 }
+
+:local activeTable "to_WAN1"
+:if ($dwState = "bite") do={ :set activeTable "to_WAN2" }
+
+# Only the currently active WAN is probed. There is deliberately no automatic
+# failback: a recovered standby is used only after the active WAN fails.
+:local edgeReceived [/ping address=212.93.105.242 routing-table=$activeTable count=3 interval=200ms]
+:local publicReceived [/ping address=1.1.1.1 routing-table=$activeTable count=3 interval=200ms]
+:local activeGood (($edgeReceived >= 2) || ($publicReceived >= 2))
+:local next $dwState
+:local reason "active-healthy"
+
+:if ($activeGood) do={
+  :set dwActiveBad 0
+} else={
+  :set dwActiveBad ($dwActiveBad + 1)
+  :set reason "active-probes-failed-keep-primary"
+  :if ($dwActiveBad >= 3) do={
+    :if ($dwState = "lmt") do={ :set next "bite" } else={ :set next "lmt" }
+    :set dwActiveBad 0
+    :set reason "active-probes-failed-3x-switch-next"
+  }
+}
+
+:if ($next != $dwState) do={
+  :if ($next = "bite") do={
+    /ip dhcp-client set [find name="client1"] default-route-tables="main:1,to_WAN1:1,to_WAN2:1"
+    :delay 1s
+    /ip dhcp-client set [find name="client2"] default-route-tables="main:2,to_WAN1:2,to_WAN2:2"
+  } else={
+    /ip dhcp-client set [find name="client2"] default-route-tables="main:1,to_WAN1:1,to_WAN2:2"
+    :delay 1s
+    /ip dhcp-client set [find name="client1"] default-route-tables="main:2,to_WAN1:2,to_WAN2:1"
+  }
+  :set dwState $next
+}
+
+:if ($dwLastDecision != $dwState) do={
+  :log warning ("DUALWAN state=" . $dwState . " reason=" . $reason . " edge-received=" . $edgeReceived . "/3 public-received=" . $publicReceived . "/3")
+  :set dwLastDecision $dwState
+}"#;
+
+fn find_router_item_id(rows: &[(String, std::collections::HashMap<String, String>)], name: &str) -> Option<String> {
+    rows.iter().find_map(|(reply, attrs)| {
+        (reply == "!re" && attrs.get("=name").map(String::as_str) == Some(name))
+            .then(|| attrs.get("=.id").cloned())
+            .flatten()
+    })
+}
+
+fn set_failover_state(api: &mut ApiRos, state: &str) -> Result<(), String> {
+    let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
+    let bite_id = find_router_item_id(&clients, "client1").ok_or_else(|| "BITE DHCP client не знайдено".to_string())?;
+    let lmt_id = find_router_item_id(&clients, "client2").ok_or_else(|| "LMT DHCP client не знайдено".to_string())?;
+
+    if state == "bite" {
+        api.talk(&["/ip/dhcp-client/set", &format!("=.id={bite_id}"), "=default-route-tables=main:1,to_WAN1:1,to_WAN2:1"]).map_err(|e| e.to_string())?;
+        api.talk(&["/ip/dhcp-client/set", &format!("=.id={lmt_id}"), "=default-route-tables=main:2,to_WAN1:2,to_WAN2:2"]).map_err(|e| e.to_string())?;
+    } else {
+        api.talk(&["/ip/dhcp-client/set", &format!("=.id={lmt_id}"), "=default-route-tables=main:1,to_WAN1:1,to_WAN2:2"]).map_err(|e| e.to_string())?;
+        api.talk(&["/ip/dhcp-client/set", &format!("=.id={bite_id}"), "=default-route-tables=main:2,to_WAN1:2,to_WAN2:1"]).map_err(|e| e.to_string())?;
+    }
+
+    let temporary_name = "DUALWAN-set-state";
+    let source = format!(":global dwState; :global dwActiveBad; :global dwLmtBad; :global dwLmtGood; :global dwLastDecision; :set dwState \"{state}\"; :set dwActiveBad 0; :set dwLmtBad 0; :set dwLmtGood 0; :set dwLastDecision \"{state}\"");
+    let _ = api.talk(&["/system/script/remove", &format!("=numbers={temporary_name}")]);
+    api.talk(&["/system/script/add", &format!("=name={temporary_name}"), &format!("=source={source}")]).map_err(|e| e.to_string())?;
+    let run = api.talk(&["/system/script/run", &format!("=number={temporary_name}")]).map_err(|e| e.to_string())?;
+    let _ = api.talk(&["/system/script/remove", &format!("=numbers={temporary_name}")]);
+    if let Some((_, attrs)) = run.iter().find(|(reply, _)| reply == "!trap") {
+        return Err(attrs.get("=message").cloned().unwrap_or_else(|| "Не вдалося оновити state".to_string()));
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Clone)]
 struct WanSample {
     ts: String,
@@ -195,7 +276,7 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
         scheduler_on_event: String::new(),
         scheduler_policy: String::new(),
         controller_state: globals.get("dwState").cloned().unwrap_or_else(|| "unknown".to_string()),
-        lmt_bad_cycles: globals.get("dwLmtBad").cloned().unwrap_or_default(),
+        lmt_bad_cycles: globals.get("dwActiveBad").or_else(|| globals.get("dwLmtBad")).cloned().unwrap_or_default(),
         lmt_good_cycles: globals.get("dwLmtGood").cloned().unwrap_or_default(),
         last_decision: globals.get("dwLastDecision").cloned().unwrap_or_default(),
         script_invalid: "missing".to_string(),
@@ -280,23 +361,9 @@ fn hold_bite_primary() -> Result<String, String> {
     let scheduler_id = api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?.into_iter()
         .find_map(|(reply, attrs)| (reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health-every-5s")).then(|| attrs.get("=.id").cloned()).flatten())
         .ok_or_else(|| "DUALWAN scheduler не знайдено".to_string())?;
-    let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
-    let client_id = |name: &str| clients.iter().find_map(|(reply, attrs)| (reply == "!re" && attrs.get("=name").map(String::as_str) == Some(name)).then(|| attrs.get("=.id").cloned()).flatten());
-    let bite_id = client_id("client1").ok_or_else(|| "BITE DHCP client не знайдено".to_string())?;
-    let lmt_id = client_id("client2").ok_or_else(|| "LMT DHCP client не знайдено".to_string())?;
 
     api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=yes"]).map_err(|e| e.to_string())?;
-    api.talk(&["/ip/dhcp-client/set", &format!("=.id={bite_id}"), "=default-route-tables=main:1,to_WAN1:1,to_WAN2:1"]).map_err(|e| e.to_string())?;
-    api.talk(&["/ip/dhcp-client/set", &format!("=.id={lmt_id}"), "=default-route-tables=main:2,to_WAN1:2,to_WAN2:2"]).map_err(|e| e.to_string())?;
-
-    let source = ":global dwState; :global dwLmtBad; :global dwLmtGood; :global dwLastDecision; :set dwState \"bite\"; :set dwLmtBad 0; :set dwLmtGood 0; :set dwLastDecision \"bite\"";
-    let _ = api.talk(&["/system/script/remove", "=numbers=DUALWAN-force-bite"]);
-    api.talk(&["/system/script/add", "=name=DUALWAN-force-bite", &format!("=source={source}")]).map_err(|e| e.to_string())?;
-    let run = api.talk(&["/system/script/run", "=number=DUALWAN-force-bite"]).map_err(|e| e.to_string())?;
-    let _ = api.talk(&["/system/script/remove", "=numbers=DUALWAN-force-bite"]);
-    if let Some((_, attrs)) = run.iter().find(|(reply, _)| reply == "!trap") {
-        return Err(attrs.get("=message").cloned().unwrap_or_else(|| "Не вдалося оновити state".to_string()));
-    }
+    set_failover_state(&mut api, "bite")?;
     Ok("BITE is primary; DUALWAN scheduler paused to prevent LMT flapping".to_string())
 }
 
@@ -308,29 +375,32 @@ fn hold_bite_primary() -> Result<String, String> {
 #[tauri::command]
 fn resume_auto_failover() -> Result<String, String> {
     let mut api = connect_and_login(Duration::from_secs(15))?;
-    let scheduler_id = api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?.into_iter()
-        .find_map(|(reply, attrs)| (reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health-every-5s")).then(|| attrs.get("=.id").cloned()).flatten())
+    let scheduler_id = find_router_item_id(&api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?, "DUALWAN-health-every-5s")
         .ok_or_else(|| "DUALWAN scheduler не знайдено".to_string())?;
-    let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
-    let client_id = |name: &str| clients.iter().find_map(|(reply, attrs)| (reply == "!re" && attrs.get("=name").map(String::as_str) == Some(name)).then(|| attrs.get("=.id").cloned()).flatten());
-    let bite_id = client_id("client1").ok_or_else(|| "BITE DHCP client не знайдено".to_string())?;
-    let lmt_id = client_id("client2").ok_or_else(|| "LMT DHCP client не знайдено".to_string())?;
 
-    api.talk(&["/ip/dhcp-client/set", &format!("=.id={lmt_id}"), "=default-route-tables=main:1,to_WAN1:1,to_WAN2:2"]).map_err(|e| e.to_string())?;
-    api.talk(&["/ip/dhcp-client/set", &format!("=.id={bite_id}"), "=default-route-tables=main:2,to_WAN1:2,to_WAN2:1"]).map_err(|e| e.to_string())?;
-
-    let source = ":global dwState; :global dwLmtBad; :global dwLmtGood; :global dwLastDecision; :set dwState \"lmt\"; :set dwLmtBad 0; :set dwLmtGood 0; :set dwLastDecision \"lmt\"";
-    let _ = api.talk(&["/system/script/remove", "=numbers=DUALWAN-resume-lmt"]);
-    api.talk(&["/system/script/add", "=name=DUALWAN-resume-lmt", &format!("=source={source}")]).map_err(|e| e.to_string())?;
-    let run = api.talk(&["/system/script/run", "=number=DUALWAN-resume-lmt"]).map_err(|e| e.to_string())?;
-    let _ = api.talk(&["/system/script/remove", "=numbers=DUALWAN-resume-lmt"]);
-    if let Some((_, attrs)) = run.iter().find(|(reply, _)| reply == "!trap") {
-        return Err(attrs.get("=message").cloned().unwrap_or_else(|| "Не вдалося оновити state".to_string()));
-    }
+    let script_id = find_router_item_id(&api.talk(&["/system/script/print"]).map_err(|e| e.to_string())?, "DUALWAN-health")
+        .ok_or_else(|| "DUALWAN-health не знайдено".to_string())?;
+    api.talk(&["/system/script/set", &format!("=.id={script_id}"), &format!("=source={STICKY_FAILOVER_SOURCE}")]).map_err(|e| e.to_string())?;
+    set_failover_state(&mut api, "lmt")?;
 
     api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=no"]).map_err(|e| e.to_string())?;
 
-    Ok("LMT is primary again; DUALWAN scheduler resumed automatic failover".to_string())
+    Ok("Sticky auto-failover enabled: LMT is primary, only the active WAN is checked, and there is no automatic failback".to_string())
+}
+
+#[tauri::command]
+fn force_next_wan() -> Result<String, String> {
+    let mut api = connect_and_login(Duration::from_secs(15))?;
+    let globals: std::collections::HashMap<String, String> = api
+        .talk(&["/system/script/environment/print"])
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter_map(|(reply, attrs)| (reply == "!re").then(|| Some((attrs.get("=name")?.clone(), attrs.get("=value").cloned().unwrap_or_default())))?)
+        .collect();
+    let current = globals.get("dwState").map(String::as_str).unwrap_or("lmt");
+    let next = if current == "bite" { "lmt" } else { "bite" };
+    set_failover_state(&mut api, next)?;
+    Ok(format!("Forced switch completed: {} is now primary", next.to_uppercase()))
 }
 
 // ---------- стан router-local dual-WAN controller ----------
@@ -607,7 +677,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, repair_failover_ping, hold_bite_primary, resume_auto_failover])
+        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, repair_failover_ping, hold_bite_primary, resume_auto_failover, force_next_wan])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

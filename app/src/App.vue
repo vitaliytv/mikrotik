@@ -46,8 +46,11 @@
         <q-btn dense unelevated color="negative" icon="sym_o_emergency" label="Зафіксувати BITE" :disable="!diagnosticSnapshot?.api_reachable" @click="holdBiteDialog = true">
           <q-tooltip>Зробити BITE primary і зупинити scheduler</q-tooltip>
         </q-btn>
-        <q-btn dense unelevated color="positive" icon="sym_o_restart_alt" label="Відновити авто-перемикання" :disable="!diagnosticSnapshot?.api_reachable" @click="resumeFailoverDialog = true">
-          <q-tooltip>Повернути LMT як primary і знову увімкнути scheduler</q-tooltip>
+        <q-btn dense unelevated color="positive" icon="sym_o_restart_alt" label="Увімкнути sticky авто" :disable="!diagnosticSnapshot?.api_reachable" @click="resumeFailoverDialog = true">
+          <q-tooltip>LMT стартує primary; перевіряється тільки активний WAN, без auto-failback</q-tooltip>
+        </q-btn>
+        <q-btn dense outline color="warning" icon="sym_o_swap_horiz" label="Наступний WAN" :disable="!diagnosticSnapshot?.api_reachable" @click="forceNextDialog = true">
+          <q-tooltip>Негайно зробити резервний WAN primary без перевірки</q-tooltip>
         </q-btn>
       </div>
     </header>
@@ -118,12 +121,25 @@
   <q-dialog v-model="resumeFailoverDialog">
     <q-card class="repair-dialog">
       <q-card-section>
-        <div class="text-subtitle1">Відновити автоматичне перемикання?</div>
-        <div class="text-body2">LMT знову стане primary (main/to_WAN1), BITE — primary лише для to_WAN2 як і раніше, і scheduler знову увімкнеться. Використовуйте лише коли LMT вже стабільний.</div>
+        <div class="text-subtitle1">Увімкнути sticky авто-перемикання?</div>
+        <div class="text-body2">LMT стане primary, але після перемикання на BITE LMT більше не перевіряється. Лише коли активний BITE впаде, primary безумовно перейде на LMT. Автоматичного повернення на LMT немає.</div>
       </q-card-section>
       <q-card-actions align="right">
         <q-btn flat label="Скасувати" v-close-popup />
-        <q-btn color="positive" unelevated label="Відновити" :loading="resumeFailoverBusy" @click="resumeAutoFailover" />
+        <q-btn color="positive" unelevated label="Увімкнути" :loading="resumeFailoverBusy" @click="resumeAutoFailover" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
+  <q-dialog v-model="forceNextDialog">
+    <q-card class="repair-dialog">
+      <q-card-section>
+        <div class="text-subtitle1">Перемкнути на наступний WAN?</div>
+        <div class="text-body2">Поточний primary буде змінено на інший WAN негайно, без перевірки його доступності. Sticky scheduler після цього контролюватиме новий primary.</div>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn flat label="Скасувати" v-close-popup />
+        <q-btn color="warning" unelevated label="Перемкнути" :loading="forceNextBusy" @click="forceNextWan" />
       </q-card-actions>
     </q-card>
   </q-dialog>
@@ -262,6 +278,8 @@ const holdBiteDialog = ref(false);
 const holdBiteBusy = ref(false);
 const resumeFailoverDialog = ref(false);
 const resumeFailoverBusy = ref(false);
+const forceNextDialog = ref(false);
+const forceNextBusy = ref(false);
 
 function loadDiagnosticHistory() {
   try {
@@ -375,7 +393,7 @@ function reportLines(snapshot, routerData, routerError) {
     `- Scheduler policy: ${snapshot.scheduler_policy || "?"}`,
     `- DUALWAN-health invalid: ${snapshot.script_invalid || "unknown"}`,
     `- DUALWAN-health runs: ${snapshot.script_runs || "?"}; last started: ${snapshot.script_last_started || "?"}`,
-    `- dwLmtBad: ${snapshot.lmt_bad_cycles || "?"}; dwLmtGood: ${snapshot.lmt_good_cycles || "?"}; last decision: ${snapshot.last_decision || "?"}`,
+    `- dwActiveBad: ${snapshot.lmt_bad_cycles || "?"}; last decision: ${snapshot.last_decision || "?"}`,
     `- Active script jobs: ${(snapshot.script_jobs || []).join(", ") || "none"}`,
   ];
   if (routerError) {
@@ -485,7 +503,7 @@ async function resumeAutoFailover() {
   try {
     const message = await invoke("resume_auto_failover");
     resumeFailoverDialog.value = false;
-    addDiagnosticEvent("up", "Авто-перемикання відновлено", message);
+    addDiagnosticEvent("up", "Sticky авто-перемикання увімкнено", message);
     $q.notify({ type: "positive", message, position: "top", timeout: 9000 });
     await pollDiagnostic();
     await captureDiagnosticReport(true);
@@ -494,6 +512,23 @@ async function resumeAutoFailover() {
     $q.notify({ type: "negative", message: `Не вдалося відновити авто-перемикання: ${error}`, position: "top", timeout: 9000 });
   } finally {
     resumeFailoverBusy.value = false;
+  }
+}
+
+async function forceNextWan() {
+  forceNextBusy.value = true;
+  try {
+    const message = await invoke("force_next_wan");
+    forceNextDialog.value = false;
+    addDiagnosticEvent("down", "Примусово перемкнено WAN", message);
+    $q.notify({ type: "warning", message, position: "top", timeout: 9000 });
+    await pollDiagnostic();
+    await captureDiagnosticReport(true);
+    await loadRouterLog();
+  } catch (error) {
+    $q.notify({ type: "negative", message: `Не вдалося перемкнути WAN: ${error}`, position: "top", timeout: 9000 });
+  } finally {
+    forceNextBusy.value = false;
   }
 }
 
