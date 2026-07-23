@@ -161,6 +161,7 @@
     </div>
   </header>
   <div class="charts">
+    <div class="box"><canvas ref="wanTimelineCanvasEl"></canvas></div>
     <div class="box"><canvas ref="flapsCanvasEl"></canvas></div>
     <div class="box"><canvas ref="qualityCanvasEl"></canvas></div>
     <div class="box">
@@ -222,9 +223,10 @@ const LIVE_MAX_POINTS = 240; // 240 * 15с ≈ 1 година в пам'яті, 
 const TRAFFIC_AVERAGE_WINDOW = 4; // 4 * 15с = 1 хвилина
 
 const speedCanvasEl = ref(null);
+const wanTimelineCanvasEl = ref(null);
 const flapsCanvasEl = ref(null);
 const qualityCanvasEl = ref(null);
-let flapsChart, qualityChart, speedChart;
+let wanTimelineChart, flapsChart, qualityChart, speedChart;
 
 let liveSamples = []; // Passive interface counters only; history lives in memory while the viewer is open.
 let qualityEvents = []; // {ts: Date, time, status} — only feeds the quality chart, not displayed directly
@@ -264,11 +266,15 @@ let diagnosticBusy = false;
 const DIAGNOSTIC_INTERVAL_MS = 5000;
 const DIAGNOSTIC_HISTORY_KEY = "mymikrotik.diagnostic-history.v1";
 const DIAGNOSTIC_ACTIVE_KEY = "mymikrotik.diagnostic-active.v1";
+const WAN_TIMELINE_KEY = "mymikrotik.wan-timeline.v1";
+const WAN_TIMELINE_MAX_POINTS = 2000;
+const WAN_TIMELINE_HEARTBEAT_MS = 5 * 60 * 1000;
 
 const diagnosticRunning = ref(localStorage.getItem(DIAGNOSTIC_ACTIVE_KEY) === "true");
 const diagnosticSnapshot = ref(null);
 const diagnosticError = ref("");
 const diagnosticHistory = ref(loadDiagnosticHistory());
+const wanTimeline = ref(loadWanTimeline());
 const diagnosticReportEl = ref(null);
 const diagnosticReport = ref(localStorage.getItem("mymikrotik.diagnostic-report.v1") || "");
 const reportBusy = ref(false);
@@ -288,6 +294,29 @@ function loadDiagnosticHistory() {
   } catch {
     return [];
   }
+}
+
+function loadWanTimeline() {
+  try {
+    const value = JSON.parse(localStorage.getItem(WAN_TIMELINE_KEY) || "[]");
+    return Array.isArray(value)
+      ? value.filter((point) => ["lmt", "bite"].includes(point?.state) && !Number.isNaN(new Date(point.ts).getTime())).slice(-WAN_TIMELINE_MAX_POINTS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordWanTimeline(snapshot) {
+  const state = snapshot?.controller_state?.toLowerCase();
+  if (!snapshot?.api_reachable || !["lmt", "bite"].includes(state)) return;
+  const ts = new Date(snapshot.checked_at || Date.now()).toISOString();
+  const last = wanTimeline.value.at(-1);
+  const elapsed = last ? new Date(ts).getTime() - new Date(last.ts).getTime() : Infinity;
+  if (last?.state === state && elapsed < WAN_TIMELINE_HEARTBEAT_MS) return;
+  wanTimeline.value = [...wanTimeline.value, { ts, state }].slice(-WAN_TIMELINE_MAX_POINTS);
+  localStorage.setItem(WAN_TIMELINE_KEY, JSON.stringify(wanTimeline.value));
+  renderWanTimeline();
 }
 
 const diagnosticLevel = computed(() => {
@@ -347,6 +376,7 @@ async function pollDiagnostic() {
     const snapshot = JSON.parse(await invoke("read_router_diagnostic"));
     diagnosticSnapshot.value = snapshot;
     diagnosticError.value = snapshot.error || "";
+    recordWanTimeline(snapshot);
     if (snapshotKey(previous || {}) !== snapshotKey(snapshot)) {
       if (snapshot.api_reachable) {
         addDiagnosticEvent("up", "RouterOS доступний", `${snapshot.identity || snapshot.endpoint}; primary ${snapshot.controller_state || "?"}`);
@@ -674,6 +704,76 @@ function hourBucket(d) {
   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:00`;
 }
 
+function timelinePoints() {
+  const points = [
+    ...events.value.filter((event) => !Number.isNaN(event.ts?.getTime())).map((event) => ({ ts: event.ts.toISOString(), state: event.state, source: "router" })),
+    ...wanTimeline.value.map((point) => ({ ...point, source: "local" })),
+  ]
+    .filter((point) => ["lmt", "bite"].includes(point.state))
+    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+  const result = [];
+  for (const point of points) {
+    const previous = result.at(-1);
+    if (previous?.state === point.state) continue;
+    result.push(point);
+  }
+  const current = diagnosticSnapshot.value?.controller_state?.toLowerCase();
+  if (["lmt", "bite"].includes(current) && result.at(-1)?.state !== current) {
+    result.push({ ts: new Date().toISOString(), state: current, source: "current" });
+  }
+  return result;
+}
+
+function renderWanTimeline() {
+  if (!wanTimelineCanvasEl.value) return;
+  const points = timelinePoints();
+  const labels = points.map((point) => fmtClock(new Date(point.ts)));
+  const values = points.map((point) => point.state === "lmt" ? 1 : 0);
+  const colors = points.map((point) => point.state === "lmt" ? "#60a5fa" : "#34d399");
+  if (wanTimelineChart) wanTimelineChart.destroy();
+  wanTimelineChart = new Chart(wanTimelineCanvasEl.value, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Primary WAN",
+        data: values,
+        borderColor: "#94a3b8",
+        backgroundColor: "rgba(96, 165, 250, .14)",
+        stepped: "before",
+        fill: true,
+        pointRadius: points.length > 80 ? 0 : 3,
+        pointBackgroundColor: colors,
+        pointBorderColor: colors,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      animation: false,
+      plugins: {
+        title: { display: true, text: "Періоди роботи primary WAN", color: "#7dd3fc", font: { size: 14 } },
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (context) => `${context.raw === 1 ? "LMT" : "BITE"} primary`,
+            afterLabel: (context) => points[context.dataIndex] ? new Date(points[context.dataIndex].ts).toLocaleString("sv-SE") : "",
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: "#888", maxTicksLimit: 10, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
+        y: {
+          min: -0.15,
+          max: 1.15,
+          ticks: { color: "#ccc", stepSize: 1, callback: (value) => value === 1 ? "LMT" : value === 0 ? "BITE" : "" },
+          grid: { color: "#2a2a3e" },
+        },
+      },
+    },
+  });
+}
+
 function buildControllerCards(data) {
   const nameFor = { zte: "LMT (WAN1)", soyea: "BITE (WAN2)" };
   const controller = data.controller || {};
@@ -782,6 +882,7 @@ async function loadRouterLog() {
     qualityEvents = (data.quality_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
     rawLogCache.value = data.raw_log || [];
     controllerCards.value = buildControllerCards(data);
+    renderWanTimeline();
     renderFlapsChart(events.value);
     renderQualityChart(qualityEvents);
     const controller = data.controller || {};
