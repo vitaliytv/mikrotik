@@ -63,6 +63,30 @@ fn find_router_item_id(rows: &[(String, std::collections::HashMap<String, String
     })
 }
 
+fn primary_route_state(api: &mut ApiRos) -> Result<Option<String>, String> {
+    let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
+    for (reply, attrs) in clients {
+        if reply != "!re" { continue; }
+        let is_main_primary = attrs.get("=default-route-tables").map(String::as_str).is_some_and(|tables| tables.contains("main:1"));
+        if !is_main_primary { continue; }
+        match attrs.get("=name").map(String::as_str) {
+            Some("client1") => return Ok(Some("bite".to_string())),
+            Some("client2") => return Ok(Some("lmt".to_string())),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+fn global_value(api: &mut ApiRos, name: &str) -> Result<Option<String>, String> {
+    let rows = api.talk(&["/system/script/environment/print"]).map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().find_map(|(reply, attrs)| {
+        (reply == "!re" && attrs.get("=name").map(String::as_str) == Some(name))
+            .then(|| attrs.get("=value").cloned())
+            .flatten()
+    }))
+}
+
 fn set_failover_state(api: &mut ApiRos, state: &str) -> Result<(), String> {
     let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
     let bite_id = find_router_item_id(&clients, "client1").ok_or_else(|| "BITE DHCP client не знайдено".to_string())?;
@@ -78,14 +102,24 @@ fn set_failover_state(api: &mut ApiRos, state: &str) -> Result<(), String> {
 
     let temporary_name = "DUALWAN-set-state";
     let source = format!(":global dwState; :global dwActiveBad; :global dwLmtBad; :global dwLmtGood; :global dwLastDecision; :set dwState \"{state}\"; :set dwActiveBad 0; :set dwLmtBad 0; :set dwLmtGood 0; :set dwLastDecision \"{state}\"");
-    let _ = api.talk(&["/system/script/remove", &format!("=numbers={temporary_name}")]);
+    if let Some(id) = find_router_item_id(&api.talk(&["/system/script/print"]).map_err(|e| e.to_string())?, temporary_name) {
+        let _ = api.talk(&["/system/script/remove", &format!("=numbers={id}")]);
+    }
     api.talk(&["/system/script/add", &format!("=name={temporary_name}"), &format!("=source={source}")]).map_err(|e| e.to_string())?;
-    let run = api.talk(&["/system/script/run", &format!("=number={temporary_name}")]).map_err(|e| e.to_string())?;
-    let _ = api.talk(&["/system/script/remove", &format!("=numbers={temporary_name}")]);
+    let temporary_id = find_router_item_id(&api.talk(&["/system/script/print"]).map_err(|e| e.to_string())?, temporary_name)
+        .ok_or_else(|| "Не вдалося знайти тимчасовий script оновлення state".to_string())?;
+    let run = api.talk(&["/system/script/run", &format!("=number={temporary_id}")]).map_err(|e| e.to_string())?;
     if let Some((_, attrs)) = run.iter().find(|(reply, _)| reply == "!trap") {
         return Err(attrs.get("=message").cloned().unwrap_or_else(|| "Не вдалося оновити state".to_string()));
     }
-    Ok(())
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(100));
+        if global_value(api, "dwState")?.as_deref() == Some(state) {
+            let _ = api.talk(&["/system/script/remove", &format!("=numbers={temporary_id}")]);
+            return Ok(());
+        }
+    }
+    Err(format!("RouterOS не підтвердив dwState={state}; scheduler залишено без змін"))
 }
 
 #[derive(Serialize, Clone)]
@@ -254,6 +288,7 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
         .flatten()
         .find_map(|(reply, attrs)| (reply == "!re").then(|| attrs.get("=name").cloned()).flatten())
         .unwrap_or_default();
+    let route_primary_state = primary_route_state(&mut api).ok().flatten();
     let globals: std::collections::HashMap<String, String> = api
         .talk(&["/system/script/environment/print"])
         .ok()
@@ -275,7 +310,7 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
         scheduler_last_started: String::new(),
         scheduler_on_event: String::new(),
         scheduler_policy: String::new(),
-        controller_state: globals.get("dwState").cloned().unwrap_or_else(|| "unknown".to_string()),
+        controller_state: route_primary_state.or_else(|| globals.get("dwState").cloned()).unwrap_or_else(|| "unknown".to_string()),
         lmt_bad_cycles: globals.get("dwActiveBad").or_else(|| globals.get("dwLmtBad")).cloned().unwrap_or_default(),
         lmt_good_cycles: globals.get("dwLmtGood").cloned().unwrap_or_default(),
         last_decision: globals.get("dwLastDecision").cloned().unwrap_or_default(),
@@ -391,15 +426,15 @@ fn resume_auto_failover() -> Result<String, String> {
 #[tauri::command]
 fn force_next_wan() -> Result<String, String> {
     let mut api = connect_and_login(Duration::from_secs(15))?;
-    let globals: std::collections::HashMap<String, String> = api
-        .talk(&["/system/script/environment/print"])
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter_map(|(reply, attrs)| (reply == "!re").then(|| Some((attrs.get("=name")?.clone(), attrs.get("=value").cloned().unwrap_or_default())))?)
-        .collect();
-    let current = globals.get("dwState").map(String::as_str).unwrap_or("lmt");
+    let scheduler_id = find_router_item_id(&api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?, "DUALWAN-health-every-5s")
+        .ok_or_else(|| "DUALWAN scheduler не знайдено".to_string())?;
+    let current = primary_route_state(&mut api)?.or_else(|| global_value(&mut api, "dwState").ok().flatten()).unwrap_or_else(|| "lmt".to_string());
     let next = if current == "bite" { "lmt" } else { "bite" };
-    set_failover_state(&mut api, next)?;
+    api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=yes"]).map_err(|e| e.to_string())?;
+    if let Err(error) = set_failover_state(&mut api, next) {
+        return Err(format!("{error}. Scheduler лишився вимкненим, щоб не застосувати застарілий state."));
+    }
+    api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=no"]).map_err(|e| e.to_string())?;
     Ok(format!("Forced switch completed: {} is now primary", next.to_uppercase()))
 }
 
