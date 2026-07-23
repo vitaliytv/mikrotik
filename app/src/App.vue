@@ -32,26 +32,20 @@
         >
           <q-tooltip>Зберегти повний read-only звіт для передачі в чат</q-tooltip>
         </q-btn>
-        <q-btn
-          dense
-          outline
-          color="warning"
-          icon="sym_o_build"
-          label="Виправити scheduler"
-          :disable="!diagnosticSnapshot?.api_reachable"
-          @click="repairDialog = true"
-        >
-          <q-tooltip>Виправити підрахунок timeout у DUALWAN-health</q-tooltip>
-        </q-btn>
-        <q-btn dense unelevated color="negative" icon="sym_o_emergency" label="Зафіксувати BITE" :disable="!diagnosticSnapshot?.api_reachable" @click="holdBiteDialog = true">
-          <q-tooltip>Зробити BITE primary і зупинити scheduler</q-tooltip>
-        </q-btn>
         <q-btn dense unelevated color="positive" icon="sym_o_restart_alt" label="Увімкнути sticky авто" :disable="!diagnosticSnapshot?.api_reachable" @click="resumeFailoverDialog = true">
           <q-tooltip>LMT стартує primary; перевіряється тільки активний WAN, без auto-failback</q-tooltip>
         </q-btn>
         <q-btn dense outline color="warning" icon="sym_o_swap_horiz" :label="`Наступний: ${nextWanLabel}`" :disable="!diagnosticSnapshot?.api_reachable" @click="forceNextDialog = true">
           <q-tooltip>{{ `Негайно зробити ${nextWanLabel} primary без перевірки` }}</q-tooltip>
         </q-btn>
+        <q-btn-dropdown dense outline color="negative" icon="sym_o_emergency" label="Аварійні">
+          <q-list>
+            <q-item clickable v-close-popup :disable="!diagnosticSnapshot?.api_reachable" @click="holdBiteDialog = true">
+              <q-item-section avatar><q-icon name="sym_o_lock" /></q-item-section>
+              <q-item-section>Зафіксувати BITE</q-item-section>
+            </q-item>
+          </q-list>
+        </q-btn-dropdown>
       </div>
     </header>
     <div class="diagnostic-grid">
@@ -91,19 +85,6 @@
       <textarea ref="diagnosticReportEl" readonly :value="diagnosticReport" aria-label="Автономний звіт діагностики"></textarea>
     </div>
   </section>
-
-  <q-dialog v-model="repairDialog">
-    <q-card class="repair-dialog">
-      <q-card-section>
-        <div class="text-subtitle1">Виправити DUALWAN-health?</div>
-        <div class="text-body2">Будуть змінені лише два ping-лічильники: timeout більше не рахуватиметься як успішна відповідь. Маршрути та DHCP leases зараз не змінюються.</div>
-      </q-card-section>
-      <q-card-actions align="right">
-        <q-btn flat label="Скасувати" v-close-popup />
-        <q-btn color="warning" unelevated label="Виправити" :loading="repairBusy" @click="repairFailoverPing" />
-      </q-card-actions>
-    </q-card>
-  </q-dialog>
 
   <q-dialog v-model="holdBiteDialog">
     <q-card class="repair-dialog">
@@ -162,8 +143,6 @@
   </header>
   <div class="charts">
     <div class="box"><canvas ref="wanTimelineCanvasEl"></canvas></div>
-    <div class="box"><canvas ref="flapsCanvasEl"></canvas></div>
-    <div class="box"><canvas ref="qualityCanvasEl"></canvas></div>
     <div class="box">
       <div class="netwatch-cards">
         <div v-for="card in controllerCards" :key="card.channel" :class="['nw-card', card.status]">
@@ -224,13 +203,9 @@ const TRAFFIC_AVERAGE_WINDOW = 4; // 4 * 15с = 1 хвилина
 
 const speedCanvasEl = ref(null);
 const wanTimelineCanvasEl = ref(null);
-const flapsCanvasEl = ref(null);
-const qualityCanvasEl = ref(null);
-let wanTimelineChart, flapsChart, qualityChart, speedChart;
+let wanTimelineChart, speedChart;
 
 let liveSamples = []; // Passive interface counters only; history lives in memory while the viewer is open.
-let qualityEvents = []; // {ts: Date, time, status} — only feeds the quality chart, not displayed directly
-
 const speedStatus = ref("—");
 const routerStatus = ref("—");
 const controllerCards = ref([]);
@@ -282,8 +257,6 @@ const wanTimeline = ref(loadWanTimeline());
 const diagnosticReportEl = ref(null);
 const diagnosticReport = ref(localStorage.getItem("mymikrotik.diagnostic-report.v1") || "");
 const reportBusy = ref(false);
-const repairDialog = ref(false);
-const repairBusy = ref(false);
 const holdBiteDialog = ref(false);
 const holdBiteBusy = ref(false);
 const resumeFailoverDialog = ref(false);
@@ -467,10 +440,6 @@ function reportLines(snapshot, routerData, routerError) {
     for (const route of routerData.routes || []) {
       lines.push(`- ${route.channel}/${route.table}: distance ${route.distance || "?"}; active ${route.active || "false"}; gw ${route.gateway || "?"}`);
     }
-    lines.push("", "## LMT probes");
-    for (const probe of routerData.probes || []) {
-      lines.push(`- ${probe.target}: ${probe.received || "0"}/3; loss ${probe.loss_percent || "?"}%; avg ${probe.avg_rtt || "?"}`);
-    }
     const important = (routerData.raw_log || [])
       .filter((entry) => /DUALWAN|scheduler.*failed|syntax error|bad parameter|dhcp.*error/i.test(entry.message || ""))
       .slice(-30);
@@ -519,26 +488,6 @@ async function copyDiagnosticReport() {
     document.execCommand("copy");
   }
   $q.notify({ type: "positive", message: "Звіт скопійовано в буфер", position: "top" });
-}
-
-async function repairFailoverPing() {
-  repairBusy.value = true;
-  try {
-    const message = await invoke("repair_failover_ping");
-    repairDialog.value = false;
-    addDiagnosticEvent("up", "Scheduler виправлено", message);
-    $q.notify({ type: "positive", message, position: "top", timeout: 7000 });
-    await pollDiagnostic();
-    setTimeout(() => {
-      pollDiagnostic();
-      captureDiagnosticReport(true);
-      loadRouterLog();
-    }, 16000);
-  } catch (error) {
-    $q.notify({ type: "negative", message: `Не вдалося виправити scheduler: ${error}`, position: "top", timeout: 9000 });
-  } finally {
-    repairBusy.value = false;
-  }
 }
 
 async function holdBitePrimary() {
@@ -729,11 +678,6 @@ function parseLogTime(t) {
   return new Date(t);
 }
 
-function hourBucket(d) {
-  const pad = (x) => String(x).padStart(2, "0");
-  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:00`;
-}
-
 function timelinePoints() {
   const points = [
     ...events.value.filter((event) => !Number.isNaN(event.ts?.getTime())).map((event) => ({ ts: event.ts.toISOString(), state: event.state, source: "router" })),
@@ -808,94 +752,18 @@ function buildControllerCards(data) {
   const nameFor = { zte: "LMT (WAN1)", soyea: "BITE (WAN2)" };
   const controller = data.controller || {};
   const dhcp = Object.fromEntries((data.dhcp || []).map((row) => [row.channel, row]));
-  const probes = data.probes || [];
   const routes = data.routes || [];
   return ["zte", "soyea"].map((channel) => {
-    const channelProbes = probes.filter((probe) => probe.channel === channel);
     const lease = dhcp[channel] || {};
     const mainRoute = routes.find((route) => route.channel === channel && route.table === "main") || {};
     const primary = controller.state === (channel === "zte" ? "lmt" : "bite");
-    const measured = channel === "zte";
-    const lmtGood = channelProbes.some((probe) => Number(probe.received || 0) >= 2);
-    const probeDetail = channelProbes
-      .map((probe) => `${probe.target}: ${probe.received || "0"}/3, ${probe.loss_percent || "?"}%, ${probe.avg_rtt || "?"}`)
-      .join(" | ");
     return {
       channel,
-      status: measured && !lmtGood ? "down" : "up",
+      status: lease.status === "bound" ? "up" : "down",
       title: `${nameFor[channel]} — ${primary ? "primary" : "reserve"}`,
-      detail1: measured ? probeDetail : "blind reserve: доступність не вимірюється",
+      detail1: primary ? "активний WAN контролюється sticky scheduler" : "резервний WAN буде перевірений лише після переходу на нього",
       detail2: `DHCP ${lease.status || "?"}, main distance ${mainRoute.distance || "?"}, gw ${lease.gateway || mainRoute.gateway || "?"}`,
     };
-  });
-}
-
-function renderFlapsChart(evs) {
-  const buckets = {};
-  for (const ev of evs) {
-    const b = hourBucket(ev.ts);
-    buckets[b] = buckets[b] || { lmt: 0, bite: 0 };
-    buckets[b][ev.state] = (buckets[b][ev.state] || 0) + 1;
-  }
-  const labels = Object.keys(buckets).sort();
-  const lmt = labels.map((l) => buckets[l].lmt || 0);
-  const bite = labels.map((l) => buckets[l].bite || 0);
-  if (flapsChart) flapsChart.destroy();
-  flapsChart = new Chart(flapsCanvasEl.value, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        { label: "LMT primary", data: lmt, backgroundColor: "#60a5fa" },
-        { label: "BITE primary", data: bite, backgroundColor: "#34d399" },
-      ],
-    },
-    options: {
-      animation: false,
-      plugins: {
-        title: { display: true, text: "Перемикання primary WAN по годинах", color: "#7dd3fc", font: { size: 14 } },
-        legend: { labels: { color: "#ccc" } },
-      },
-      scales: {
-        x: { stacked: true, ticks: { color: "#888", maxRotation: 60, minRotation: 60 }, grid: { color: "#2a2a3e" } },
-        y: { stacked: true, ticks: { color: "#ccc" }, grid: { color: "#2a2a3e" }, title: { display: true, text: "к-сть", color: "#aaa" } },
-      },
-    },
-  });
-}
-
-function renderQualityChart(evs) {
-  const buckets = {};
-  for (const ev of evs) {
-    const bucket = hourBucket(ev.ts);
-    buckets[bucket] = buckets[bucket] || { degraded: 0, recovered: 0 };
-    if (ev.status === "lmt-loss-degraded") buckets[bucket].degraded += 1;
-    if (ev.status === "lmt-loss-recovered") buckets[bucket].recovered += 1;
-  }
-  const labels = Object.keys(buckets).sort();
-  const degraded = labels.map((label) => buckets[label].degraded);
-  const recovered = labels.map((label) => buckets[label].recovered);
-  if (qualityChart) qualityChart.destroy();
-  qualityChart = new Chart(qualityCanvasEl.value, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        { label: "LMT loss degraded", data: degraded, backgroundColor: "#f59e0b" },
-        { label: "LMT відновлено", data: recovered, backgroundColor: "#34d399" },
-      ],
-    },
-    options: {
-      animation: false,
-      plugins: {
-        title: { display: true, text: "LMT quality-події: втрата на обох probes 60 с", color: "#7dd3fc", font: { size: 14 } },
-        legend: { labels: { color: "#ccc" } },
-      },
-      scales: {
-        x: { stacked: true, ticks: { color: "#888", maxRotation: 60, minRotation: 60 }, grid: { color: "#2a2a3e" } },
-        y: { stacked: true, ticks: { color: "#ccc", precision: 0 }, grid: { color: "#2a2a3e" }, title: { display: true, text: "події", color: "#aaa" } },
-      },
-    },
   });
 }
 
@@ -911,12 +779,9 @@ async function loadRouterLog() {
       return;
     }
     events.value = (data.switch_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
-    qualityEvents = (data.quality_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
     rawLogCache.value = data.raw_log || [];
     controllerCards.value = buildControllerCards(data);
     renderWanTimeline();
-    renderFlapsChart(events.value);
-    renderQualityChart(qualityEvents);
     const controller = data.controller || {};
     routerStatus.value = `scheduler ${controller.scheduler_enabled === "true" ? "активний" : "недоступний"} | ${controller.interval || "?"} | primary: ${(controller.state || "?").toUpperCase()} | запусків: ${controller.scheduler_runs || "?"}`;
   } catch (e) {

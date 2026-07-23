@@ -1,6 +1,6 @@
 mod routeros;
 
-use routeros::{connect_and_login, load_config, read_traffic, ApiRos, PROBE_LMT_PUBLIC, PROBE_ZTE};
+use routeros::{connect_and_login, load_config, read_traffic, ApiRos};
 use serde::Serialize;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -353,43 +353,6 @@ fn read_router_diagnostic() -> Result<String, String> {
     read_router_diagnostic_impl()
 }
 
-/// Repairs the RouterOS `as-value` ping accounting bug in the current
-/// DUALWAN-health source. The UI requires an explicit confirmation before it
-/// invokes this write operation.
-#[tauri::command]
-fn repair_failover_ping() -> Result<String, String> {
-    let mut api = connect_and_login(Duration::from_secs(15))?;
-    let script = api
-        .talk(&["/system/script/print"])
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find_map(|(reply, attrs)| {
-            (reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health"))
-                .then_some(attrs)
-        })
-        .ok_or_else(|| "DUALWAN-health не знайдено".to_string())?;
-    let id = script.get("=.id").cloned().ok_or_else(|| "ID DUALWAN-health відсутній".to_string())?;
-    let source = script.get("=source").cloned().ok_or_else(|| "source DUALWAN-health відсутній".to_string())?;
-    let old_edge = ":foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={ :set edgeReceived ($edgeReceived + 1) }";
-    let old_public = ":foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={ :set publicReceived ($publicReceived + 1) }";
-    let new_edge = ":foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={\n  :if (($reply->\"status\") != \"timeout\") do={ :set edgeReceived ($edgeReceived + 1) }\n}";
-    let new_public = ":foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={\n  :if (($reply->\"status\") != \"timeout\") do={ :set publicReceived ($publicReceived + 1) }\n}";
-    if source.contains(new_edge) && source.contains(new_public) {
-        return Ok("Ping accounting already repaired".to_string());
-    }
-    let updated = source.replace(old_edge, new_edge).replace(old_public, new_public);
-    if updated == source {
-        return Err("Невідома версія DUALWAN-health: автоматичне виправлення скасовано".to_string());
-    }
-    let result = api
-        .talk(&["/system/script/set", &format!("=.id={id}"), &format!("=source={updated}")])
-        .map_err(|e| e.to_string())?;
-    if let Some((_, attrs)) = result.iter().find(|(reply, _)| reply == "!trap") {
-        return Err(attrs.get("=message").cloned().unwrap_or_else(|| "RouterOS відхилив source".to_string()));
-    }
-    Ok("Ping accounting repaired; scheduler will re-evaluate LMT within 15 seconds".to_string())
-}
-
 #[tauri::command]
 fn hold_bite_primary() -> Result<String, String> {
     let mut api = connect_and_login(Duration::from_secs(15))?;
@@ -441,15 +404,6 @@ fn force_next_wan() -> Result<String, String> {
 // ---------- стан router-local dual-WAN controller ----------
 
 #[derive(Serialize)]
-struct ProbeInfo {
-    channel: String,
-    target: String,
-    received: String,
-    loss_percent: String,
-    avg_rtt: String,
-}
-
-#[derive(Serialize)]
 struct RouteInfo {
     channel: String,
     table: String,
@@ -485,12 +439,6 @@ struct SwitchEvent {
 }
 
 #[derive(Serialize)]
-struct QualityEvent {
-    time: String,
-    status: String,
-}
-
-#[derive(Serialize)]
 struct RawLogLine {
     time: String,
     topics: String,
@@ -502,9 +450,7 @@ struct RouterLogResult {
     controller: ControllerInfo,
     dhcp: Vec<DhcpInfo>,
     routes: Vec<RouteInfo>,
-    probes: Vec<ProbeInfo>,
     switch_events: Vec<SwitchEvent>,
-    quality_events: Vec<QualityEvent>,
     raw_log: Vec<RawLogLine>,
     log_total_lines: usize,
 }
@@ -519,30 +465,6 @@ fn controller_state(api: &mut ApiRos) -> String {
                 .then(|| attrs.get("=value").cloned().unwrap_or_default())
         })
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn read_probe(api: &mut ApiRos, channel: &str, address: &str) -> ProbeInfo {
-    let summary = api
-        .talk(&[
-            "/ping",
-            &format!("=address={}", address),
-            "=count=3",
-            "=interval=200ms",
-        ])
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter(|(reply, _)| reply == "!re")
-        .last()
-        .map(|(_, attrs)| attrs)
-        .unwrap_or_default();
-    ProbeInfo {
-        channel: channel.to_string(),
-        target: address.to_string(),
-        received: summary.get("=received").cloned().unwrap_or_else(|| "0".to_string()),
-        loss_percent: summary.get("=packet-loss").cloned().unwrap_or_else(|| "100".to_string()),
-        avg_rtt: summary.get("=avg-rtt").cloned().unwrap_or_else(|| "?".to_string()),
-    }
 }
 
 pub fn read_router_log_impl() -> Result<String, String> {
@@ -622,9 +544,7 @@ pub fn read_router_log_impl() -> Result<String, String> {
     let log_rows: Vec<_> = log_rows.into_iter().filter(|(r, _)| r == "!re").collect();
 
     let mut switch_events = Vec::new();
-    let mut quality_events = Vec::new();
     let mut seen_switches = std::collections::HashSet::new();
-    let mut seen_quality = std::collections::HashSet::new();
     for (_, attrs) in &log_rows {
         let msg = attrs.get("=message").cloned().unwrap_or_default();
         let t = attrs.get("=time").cloned().unwrap_or_default();
@@ -644,12 +564,6 @@ pub fn read_router_log_impl() -> Result<String, String> {
                 state,
                 reason,
             });
-        } else if let Some(rest) = msg.strip_prefix("DUALWAN quality=") {
-            let status = rest.split_whitespace().next().unwrap_or_default().to_string();
-            let key = (t.clone(), status.clone());
-            if seen_quality.insert(key) {
-                quality_events.push(QualityEvent { time: t, status });
-            }
         }
     }
 
@@ -671,12 +585,7 @@ pub fn read_router_log_impl() -> Result<String, String> {
         controller,
         dhcp,
         routes,
-        probes: vec![
-            read_probe(&mut api, "zte", PROBE_ZTE),
-            read_probe(&mut api, "zte", PROBE_LMT_PUBLIC),
-        ],
         switch_events,
-        quality_events,
         raw_log,
         log_total_lines,
     };
@@ -714,7 +623,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, repair_failover_ping, hold_bite_primary, resume_auto_failover, force_next_wan])
+        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, hold_bite_primary, resume_auto_failover, force_next_wan])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
