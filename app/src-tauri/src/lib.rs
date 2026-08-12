@@ -7,63 +7,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MONITOR_INTERVAL: Duration = Duration::from_secs(15);
 
-const STICKY_FAILOVER_SOURCE: &str = r#":global dwActiveBad
-
-:if ([:typeof $dwActiveBad] = "nothing") do={ :set dwActiveBad 0 }
-
-:local current "lmt"
-:local lmtTables [/ip dhcp-client get [find name="client2"] default-route-tables]
-:if ([:find $lmtTables "main:1"] = nil) do={ :set current "bite" }
-:local activeTable "to_WAN1"
-:if ($current = "bite") do={ :set activeTable "to_WAN2" }
-
-# The active WAN is derived from the DHCP main-route priority. No RouterOS
-# global state is used, so manual switching and scheduler agree after restart.
-:local edgeReceived [/ping address=212.93.105.242 routing-table=$activeTable count=3 interval=200ms]
-:local publicReceived [/ping address=1.1.1.1 routing-table=$activeTable count=3 interval=200ms]
-:local activeGood (($edgeReceived >= 2) || ($publicReceived >= 2))
-:local next $current
-:local reason "active-healthy"
-
-:if ($activeGood) do={
-  :set dwActiveBad 0
-} else={
-  :set dwActiveBad ($dwActiveBad + 1)
-  :set reason "active-probes-failed-keep-primary"
-  :if ($dwActiveBad >= 3) do={
-    :if ($current = "lmt") do={ :set next "bite" } else={ :set next "lmt" }
-    :set dwActiveBad 0
-    :set reason "active-probes-failed-3x-switch-next"
-  }
-}
-
-:if ($next != $current) do={
-  :if ($next = "bite") do={
-    /ip dhcp-client set [find name="client1"] default-route-tables="main:1,to_WAN1:1,to_WAN2:1"
-    :delay 1s
-    /ip dhcp-client set [find name="client2"] default-route-tables="main:2,to_WAN1:2,to_WAN2:2"
-  } else={
-    /ip dhcp-client set [find name="client2"] default-route-tables="main:1,to_WAN1:1,to_WAN2:2"
-    :delay 1s
-    /ip dhcp-client set [find name="client1"] default-route-tables="main:2,to_WAN1:2,to_WAN2:1"
-  }
-  :log warning ("DUALWAN state=" . $next . " reason=" . $reason . " edge-received=" . $edgeReceived . "/3 public-received=" . $publicReceived . "/3")
-}"#;
-
-fn find_router_item_id(rows: &[(String, std::collections::HashMap<String, String>)], name: &str) -> Option<String> {
-    rows.iter().find_map(|(reply, attrs)| {
-        (reply == "!re" && attrs.get("=name").map(String::as_str) == Some(name))
-            .then(|| attrs.get("=.id").cloned())
-            .flatten()
-    })
-}
-
-fn primary_route_state(api: &mut ApiRos) -> Result<Option<String>, String> {
+fn active_wan_state(api: &mut ApiRos) -> Result<Option<String>, String> {
     let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
     for (reply, attrs) in clients {
         if reply != "!re" { continue; }
-        let is_main_primary = attrs.get("=default-route-tables").map(String::as_str).is_some_and(|tables| tables.contains("main:1"));
-        if !is_main_primary { continue; }
+        let is_active = attrs.get("=default-route-tables").map(String::as_str).is_some_and(|tables| tables.contains("main:1"));
+        if !is_active { continue; }
         match attrs.get("=name").map(String::as_str) {
             Some("client1") => return Ok(Some("bite".to_string())),
             Some("client2") => return Ok(Some("lmt".to_string())),
@@ -71,25 +20,6 @@ fn primary_route_state(api: &mut ApiRos) -> Result<Option<String>, String> {
         }
     }
     Ok(None)
-}
-
-fn set_failover_state(api: &mut ApiRos, state: &str) -> Result<(), String> {
-    let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
-    let bite_id = find_router_item_id(&clients, "client1").ok_or_else(|| "BITE DHCP client не знайдено".to_string())?;
-    let lmt_id = find_router_item_id(&clients, "client2").ok_or_else(|| "LMT DHCP client не знайдено".to_string())?;
-
-    if state == "bite" {
-        api.talk(&["/ip/dhcp-client/set", &format!("=.id={bite_id}"), "=default-route-tables=main:1,to_WAN1:1,to_WAN2:1"]).map_err(|e| e.to_string())?;
-        api.talk(&["/ip/dhcp-client/set", &format!("=.id={lmt_id}"), "=default-route-tables=main:2,to_WAN1:2,to_WAN2:2"]).map_err(|e| e.to_string())?;
-    } else {
-        api.talk(&["/ip/dhcp-client/set", &format!("=.id={lmt_id}"), "=default-route-tables=main:1,to_WAN1:1,to_WAN2:2"]).map_err(|e| e.to_string())?;
-        api.talk(&["/ip/dhcp-client/set", &format!("=.id={bite_id}"), "=default-route-tables=main:2,to_WAN1:2,to_WAN2:1"]).map_err(|e| e.to_string())?;
-    }
-
-    if primary_route_state(api)?.as_deref() != Some(state) {
-        return Err(format!("RouterOS не підтвердив main route для {state}"));
-    }
-    Ok(())
 }
 
 #[derive(Serialize, Clone)]
@@ -184,7 +114,6 @@ struct DiagnosticSnapshot {
     scheduler_policy: String,
     controller_state: String,
     lmt_bad_cycles: String,
-    lmt_good_cycles: String,
     last_decision: String,
     script_invalid: String,
     script_runs: String,
@@ -211,7 +140,6 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
                 scheduler_policy: String::new(),
                 controller_state: "unknown".to_string(),
                 lmt_bad_cycles: String::new(),
-                lmt_good_cycles: String::new(),
                 last_decision: String::new(),
                 script_invalid: "unknown".to_string(),
                 script_runs: String::new(),
@@ -240,7 +168,6 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
                 scheduler_policy: String::new(),
                 controller_state: "unknown".to_string(),
                 lmt_bad_cycles: String::new(),
-                lmt_good_cycles: String::new(),
                 last_decision: String::new(),
                 script_invalid: "unknown".to_string(),
                 script_runs: String::new(),
@@ -258,7 +185,7 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
         .flatten()
         .find_map(|(reply, attrs)| (reply == "!re").then(|| attrs.get("=name").cloned()).flatten())
         .unwrap_or_default();
-    let route_primary_state = primary_route_state(&mut api).ok().flatten();
+    let active_wan_state = active_wan_state(&mut api).ok().flatten();
     let globals: std::collections::HashMap<String, String> = api
         .talk(&["/system/script/environment/print"])
         .ok()
@@ -280,10 +207,9 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
         scheduler_last_started: String::new(),
         scheduler_on_event: String::new(),
         scheduler_policy: String::new(),
-        controller_state: route_primary_state.clone().unwrap_or_else(|| "unknown".to_string()),
+        controller_state: active_wan_state.clone().unwrap_or_else(|| "unknown".to_string()),
         lmt_bad_cycles: globals.get("dwActiveBad").or_else(|| globals.get("dwLmtBad")).cloned().unwrap_or_default(),
-        lmt_good_cycles: globals.get("dwLmtGood").cloned().unwrap_or_default(),
-        last_decision: route_primary_state.unwrap_or_default(),
+        last_decision: active_wan_state.unwrap_or_default(),
         script_invalid: "missing".to_string(),
         script_runs: String::new(),
         script_last_started: String::new(),
@@ -321,54 +247,6 @@ pub fn read_router_diagnostic_impl() -> Result<String, String> {
 #[tauri::command]
 fn read_router_diagnostic() -> Result<String, String> {
     read_router_diagnostic_impl()
-}
-
-#[tauri::command]
-fn hold_bite_primary() -> Result<String, String> {
-    let mut api = connect_and_login(Duration::from_secs(15))?;
-    let scheduler_id = api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?.into_iter()
-        .find_map(|(reply, attrs)| (reply == "!re" && attrs.get("=name").map(String::as_str) == Some("DUALWAN-health-every-5s")).then(|| attrs.get("=.id").cloned()).flatten())
-        .ok_or_else(|| "DUALWAN scheduler не знайдено".to_string())?;
-
-    api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=yes"]).map_err(|e| e.to_string())?;
-    set_failover_state(&mut api, "bite")?;
-    Ok("BITE is primary; DUALWAN scheduler paused to prevent LMT flapping".to_string())
-}
-
-/// Reverses `hold_bite_primary`: restores the original per-table route
-/// priorities (LMT primary for main/to_WAN1, BITE primary for to_WAN2 — not
-/// a plain mirror of the hold, `to_WAN2` prefers BITE by design even when LMT
-/// is primary overall) and re-enables the DUALWAN-health scheduler so the
-/// automatic failover resumes evaluating on its own.
-#[tauri::command]
-fn resume_auto_failover() -> Result<String, String> {
-    let mut api = connect_and_login(Duration::from_secs(15))?;
-    let scheduler_id = find_router_item_id(&api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?, "DUALWAN-health-every-5s")
-        .ok_or_else(|| "DUALWAN scheduler не знайдено".to_string())?;
-
-    let script_id = find_router_item_id(&api.talk(&["/system/script/print"]).map_err(|e| e.to_string())?, "DUALWAN-health")
-        .ok_or_else(|| "DUALWAN-health не знайдено".to_string())?;
-    api.talk(&["/system/script/set", &format!("=.id={script_id}"), &format!("=source={STICKY_FAILOVER_SOURCE}")]).map_err(|e| e.to_string())?;
-    set_failover_state(&mut api, "lmt")?;
-
-    api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=no"]).map_err(|e| e.to_string())?;
-
-    Ok("Sticky auto-failover enabled: LMT is primary, only the active WAN is checked, and there is no automatic failback".to_string())
-}
-
-#[tauri::command]
-fn force_next_wan() -> Result<String, String> {
-    let mut api = connect_and_login(Duration::from_secs(15))?;
-    let scheduler_id = find_router_item_id(&api.talk(&["/system/scheduler/print"]).map_err(|e| e.to_string())?, "DUALWAN-health-every-5s")
-        .ok_or_else(|| "DUALWAN scheduler не знайдено".to_string())?;
-    let current = primary_route_state(&mut api)?.ok_or_else(|| "Не вдалося визначити поточний main WAN".to_string())?;
-    let next = if current == "bite" { "lmt" } else { "bite" };
-    api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=yes"]).map_err(|e| e.to_string())?;
-    if let Err(error) = set_failover_state(&mut api, next) {
-        return Err(format!("{error}. Scheduler лишився вимкненим, щоб не змінювати маршрути повторно."));
-    }
-    api.talk(&["/system/scheduler/set", &format!("=.id={scheduler_id}"), "=disabled=no"]).map_err(|e| e.to_string())?;
-    Ok(format!("Forced switch completed: {} is now primary", next.to_uppercase()))
 }
 
 // ---------- стан router-local dual-WAN controller ----------
@@ -426,14 +304,9 @@ struct RouterLogResult {
 }
 
 fn controller_state(api: &mut ApiRos) -> String {
-    api.talk(&["/system/script/environment/print"])
+    active_wan_state(api)
         .ok()
-        .into_iter()
         .flatten()
-        .find_map(|(reply, attrs)| {
-            (reply == "!re" && attrs.get("=name").map(String::as_str) == Some("dwState"))
-                .then(|| attrs.get("=value").cloned().unwrap_or_default())
-        })
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -593,7 +466,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic, hold_bite_primary, resume_auto_failover, force_next_wan])
+        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -32,20 +32,6 @@
         >
           <q-tooltip>Зберегти повний read-only звіт для передачі в чат</q-tooltip>
         </q-btn>
-        <q-btn dense unelevated color="positive" icon="sym_o_restart_alt" label="Увімкнути sticky авто" :disable="!diagnosticSnapshot?.api_reachable" @click="resumeFailoverDialog = true">
-          <q-tooltip>LMT стартує primary; перевіряється тільки активний WAN, без auto-failback</q-tooltip>
-        </q-btn>
-        <q-btn dense outline color="warning" icon="sym_o_swap_horiz" :label="`Наступний: ${nextWanLabel}`" :disable="!diagnosticSnapshot?.api_reachable" @click="forceNextDialog = true">
-          <q-tooltip>{{ `Негайно зробити ${nextWanLabel} primary без перевірки` }}</q-tooltip>
-        </q-btn>
-        <q-btn-dropdown dense outline color="negative" icon="sym_o_emergency" label="Аварійні">
-          <q-list>
-            <q-item clickable v-close-popup :disable="!diagnosticSnapshot?.api_reachable" @click="holdBiteDialog = true">
-              <q-item-section avatar><q-icon name="sym_o_lock" /></q-item-section>
-              <q-item-section>Зафіксувати BITE</q-item-section>
-            </q-item>
-          </q-list>
-        </q-btn-dropdown>
       </div>
     </header>
     <div class="diagnostic-grid">
@@ -86,45 +72,6 @@
     </div>
   </section>
 
-  <q-dialog v-model="holdBiteDialog">
-    <q-card class="repair-dialog">
-      <q-card-section>
-        <div class="text-subtitle1">Зафіксувати BITE як primary?</div>
-        <div class="text-body2">BITE отримає main distance 1, LMT стане резервом, а scheduler буде вимкнений. Це аварійна стабілізація, щоб прибрати flapping.</div>
-      </q-card-section>
-      <q-card-actions align="right">
-        <q-btn flat label="Скасувати" v-close-popup />
-        <q-btn color="negative" unelevated label="Зафіксувати BITE" :loading="holdBiteBusy" @click="holdBitePrimary" />
-      </q-card-actions>
-    </q-card>
-  </q-dialog>
-
-  <q-dialog v-model="resumeFailoverDialog">
-    <q-card class="repair-dialog">
-      <q-card-section>
-        <div class="text-subtitle1">Увімкнути sticky авто-перемикання?</div>
-        <div class="text-body2">LMT стане primary, але після перемикання на BITE LMT більше не перевіряється. Лише коли активний BITE впаде, primary безумовно перейде на LMT. Автоматичного повернення на LMT немає.</div>
-      </q-card-section>
-      <q-card-actions align="right">
-        <q-btn flat label="Скасувати" v-close-popup />
-        <q-btn color="positive" unelevated label="Увімкнути" :loading="resumeFailoverBusy" @click="resumeAutoFailover" />
-      </q-card-actions>
-    </q-card>
-  </q-dialog>
-
-  <q-dialog v-model="forceNextDialog">
-    <q-card class="repair-dialog">
-      <q-card-section>
-        <div class="text-subtitle1">Перемкнути на {{ nextWanLabel }}?</div>
-        <div class="text-body2">{{ nextWanLabel }} негайно стане primary без перевірки його доступності. Sticky scheduler після цього контролюватиме новий primary.</div>
-      </q-card-section>
-      <q-card-actions align="right">
-        <q-btn flat label="Скасувати" v-close-popup />
-        <q-btn color="warning" unelevated :label="`На ${nextWanLabel}`" :loading="forceNextBusy" @click="forceNextWan" />
-      </q-card-actions>
-    </q-card>
-  </q-dialog>
-
   <header style="margin-top: 28px">
     <h1>Трафік на WAN-інтерфейсах (середнє за 1 хв)</h1>
     <div class="controls">
@@ -155,7 +102,7 @@
         <thead>
           <tr>
             <th>Час</th>
-            <th>Primary WAN</th>
+            <th>Активний WAN</th>
             <th>Причина</th>
           </tr>
         </thead>
@@ -257,12 +204,6 @@ const wanTimeline = ref(loadWanTimeline());
 const diagnosticReportEl = ref(null);
 const diagnosticReport = ref(localStorage.getItem("mymikrotik.diagnostic-report.v1") || "");
 const reportBusy = ref(false);
-const holdBiteDialog = ref(false);
-const holdBiteBusy = ref(false);
-const resumeFailoverDialog = ref(false);
-const resumeFailoverBusy = ref(false);
-const forceNextDialog = ref(false);
-const forceNextBusy = ref(false);
 
 function loadDiagnosticHistory() {
   try {
@@ -310,14 +251,7 @@ const diagnosticStatus = computed(() => {
 const diagnosticControllerLabel = computed(() => {
   const snapshot = diagnosticSnapshot.value;
   if (!snapshot?.api_reachable) return "—";
-  return snapshot.controller_state ? `Primary: ${snapshot.controller_state.toUpperCase()}` : "State невідомий";
-});
-
-const nextWanLabel = computed(() => {
-  const state = diagnosticSnapshot.value?.controller_state?.toLowerCase();
-  if (state === "lmt") return "BITE";
-  if (state === "bite") return "LMT";
-  return "інший WAN";
+  return snapshot.controller_state ? `Активний: ${snapshot.controller_state.toUpperCase()}` : "Стан невідомий";
 });
 
 const diagnosticSchedulerLabel = computed(() => {
@@ -381,7 +315,7 @@ async function pollDiagnostic() {
     else scheduleReconnect();
     if (snapshotKey(previous || {}) !== snapshotKey(snapshot)) {
       if (snapshot.api_reachable) {
-        addDiagnosticEvent("up", "RouterOS доступний", `${snapshot.identity || snapshot.endpoint}; primary ${snapshot.controller_state || "?"}`);
+        addDiagnosticEvent("up", "RouterOS доступний", `${snapshot.identity || snapshot.endpoint}; активний ${snapshot.controller_state || "?"}`);
         if (previous && !previous.api_reachable) {
           $q.notify({ type: "positive", message: "RouterOS API відновився", position: "top" });
           loadRouterLog();
@@ -488,57 +422,6 @@ async function copyDiagnosticReport() {
     document.execCommand("copy");
   }
   $q.notify({ type: "positive", message: "Звіт скопійовано в буфер", position: "top" });
-}
-
-async function holdBitePrimary() {
-  holdBiteBusy.value = true;
-  try {
-    const message = await invoke("hold_bite_primary");
-    holdBiteDialog.value = false;
-    addDiagnosticEvent("down", "BITE зафіксовано primary", message);
-    $q.notify({ type: "warning", message, position: "top", timeout: 9000 });
-    await pollDiagnostic();
-    await captureDiagnosticReport(true);
-    await loadRouterLog();
-  } catch (error) {
-    $q.notify({ type: "negative", message: `Не вдалося зафіксувати BITE: ${error}`, position: "top", timeout: 9000 });
-  } finally {
-    holdBiteBusy.value = false;
-  }
-}
-
-async function resumeAutoFailover() {
-  resumeFailoverBusy.value = true;
-  try {
-    const message = await invoke("resume_auto_failover");
-    resumeFailoverDialog.value = false;
-    addDiagnosticEvent("up", "Sticky авто-перемикання увімкнено", message);
-    $q.notify({ type: "positive", message, position: "top", timeout: 9000 });
-    await pollDiagnostic();
-    await captureDiagnosticReport(true);
-    await loadRouterLog();
-  } catch (error) {
-    $q.notify({ type: "negative", message: `Не вдалося відновити авто-перемикання: ${error}`, position: "top", timeout: 9000 });
-  } finally {
-    resumeFailoverBusy.value = false;
-  }
-}
-
-async function forceNextWan() {
-  forceNextBusy.value = true;
-  try {
-    const message = await invoke("force_next_wan");
-    forceNextDialog.value = false;
-    addDiagnosticEvent("down", "Примусово перемкнено WAN", message);
-    $q.notify({ type: "warning", message, position: "top", timeout: 9000 });
-    await pollDiagnostic();
-    await captureDiagnosticReport(true);
-    await loadRouterLog();
-  } catch (error) {
-    $q.notify({ type: "negative", message: `Не вдалося перемкнути WAN: ${error}`, position: "top", timeout: 9000 });
-  } finally {
-    forceNextBusy.value = false;
-  }
 }
 
 function startDiagnostic() {
@@ -711,7 +594,7 @@ function renderWanTimeline() {
     data: {
       labels,
       datasets: [{
-        label: "Primary WAN",
+        label: "Активний WAN",
         data: values,
         borderColor: "#94a3b8",
         backgroundColor: "rgba(96, 165, 250, .14)",
@@ -726,11 +609,11 @@ function renderWanTimeline() {
     options: {
       animation: false,
       plugins: {
-        title: { display: true, text: "Періоди роботи primary WAN", color: "#7dd3fc", font: { size: 14 } },
+        title: { display: true, text: "Періоди роботи активного WAN", color: "#7dd3fc", font: { size: 14 } },
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (context) => `${context.raw === 1 ? "LMT" : "BITE"} primary`,
+            label: (context) => `${context.raw === 1 ? "LMT" : "BITE"} активний`,
             afterLabel: (context) => points[context.dataIndex] ? new Date(points[context.dataIndex].ts).toLocaleString("sv-SE") : "",
           },
         },
@@ -756,12 +639,12 @@ function buildControllerCards(data) {
   return ["zte", "soyea"].map((channel) => {
     const lease = dhcp[channel] || {};
     const mainRoute = routes.find((route) => route.channel === channel && route.table === "main") || {};
-    const primary = controller.state === (channel === "zte" ? "lmt" : "bite");
+    const active = controller.state === (channel === "zte" ? "lmt" : "bite");
     return {
       channel,
       status: lease.status === "bound" ? "up" : "down",
-      title: `${nameFor[channel]} — ${primary ? "primary" : "reserve"}`,
-      detail1: primary ? "активний WAN контролюється sticky scheduler" : "резервний WAN буде перевірений лише після переходу на нього",
+      title: `${nameFor[channel]} — ${active ? "активний" : "неактивний"}`,
+      detail1: active ? "активний WAN контролюється scheduler" : "канал буде перевірений після переходу на нього",
       detail2: `DHCP ${lease.status || "?"}, main distance ${mainRoute.distance || "?"}, gw ${lease.gateway || mainRoute.gateway || "?"}`,
     };
   });
@@ -783,7 +666,7 @@ async function loadRouterLog() {
     controllerCards.value = buildControllerCards(data);
     renderWanTimeline();
     const controller = data.controller || {};
-    routerStatus.value = `scheduler ${controller.scheduler_enabled === "true" ? "активний" : "недоступний"} | ${controller.interval || "?"} | primary: ${(controller.state || "?").toUpperCase()} | запусків: ${controller.scheduler_runs || "?"}`;
+    routerStatus.value = `scheduler ${controller.scheduler_enabled === "true" ? "активний" : "недоступний"} | ${controller.interval || "?"} | активний: ${(controller.state || "?").toUpperCase()} | запусків: ${controller.scheduler_runs || "?"}`;
   } catch (e) {
     routerStatus.value = `RouterOS недоступний. Повторне підключення: ${e}`;
   } finally {
