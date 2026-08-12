@@ -119,10 +119,6 @@ header {
   font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.repair-dialog {
-  max-width: 460px;
-}
-
 table.events tr.down td {
   color: #f87171;
 }
