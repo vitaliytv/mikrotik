@@ -9,6 +9,98 @@ body {
   padding: 16px 20px;
 }
 
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: -16px -20px 24px;
+  padding: 12px 20px;
+  border-bottom: 1px solid #2a2a3e;
+  background: rgb(17 17 17 / 96%);
+  backdrop-filter: blur(10px);
+}
+
+.top-nav-brand {
+  display: grid;
+  gap: 3px;
+  color: #7dd3fc;
+}
+
+.api-status {
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.api-status.healthy {
+  color: #34d399;
+}
+
+.api-status.failed {
+  color: #f87171;
+}
+
+.top-nav-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.top-nav-tabs .q-btn {
+  color: #aab1c2;
+  white-space: nowrap;
+}
+
+.top-nav-tabs .q-btn.active {
+  color: #7dd3fc;
+  background: #1e293b;
+}
+
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.page-guide {
+  margin-bottom: 20px;
+  border: 1px solid #2f425a;
+  border-left: 4px solid #7dd3fc;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #151d2b;
+}
+
+.page-guide strong {
+  color: #7dd3fc;
+}
+
+.page-guide dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  margin: 10px 0 0;
+}
+
+.page-guide div {
+  min-width: 0;
+}
+
+.page-guide dt {
+  color: #aab1c2;
+  font-size: 11px;
+}
+
+.page-guide dd {
+  margin: 2px 0 0;
+  color: #d1d5db;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 header {
   display: flex;
   align-items: center;
@@ -20,7 +112,6 @@ header {
 
 .agent-toolbar {
   display: flex;
-  justify-content: flex-end;
   gap: 4px;
 }
 
@@ -184,6 +275,45 @@ select {
   padding: 16px;
 }
 
+.overview-cards {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.speed-test {
+  margin-top: 28px;
+}
+
+.speed-test-result {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.speed-test-measurement {
+  border-left: 3px solid #60a5fa;
+  padding-left: 12px;
+}
+
+.speed-test-measurement:nth-child(2) {
+  border-left-color: #34d399;
+}
+
+.speed-test-measurement strong,
+.speed-test-measurement small,
+.speed-test-time {
+  display: block;
+}
+
+.speed-test-measurement small,
+.speed-test-time {
+  color: #9ca3af;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
 canvas {
   max-height: 300px;
 }
@@ -265,7 +395,31 @@ table.events th {
 }
 
 @media (max-width: 700px) {
+  body {
+    padding: 12px;
+  }
+
+  .top-nav {
+    grid-template-columns: 1fr auto;
+    margin: -12px -12px 18px;
+    padding: 10px 12px;
+  }
+
+  .top-nav-tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: start;
+  }
+
   .diagnostic-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .page-guide dl {
+    grid-template-columns: 1fr;
+  }
+
+  .speed-test-result {
     grid-template-columns: 1fr;
   }
 }

@@ -6,6 +6,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 const MONITOR_INTERVAL: Duration = Duration::from_secs(15);
+const WAN_SPEED_TEST_URL: &str = "https://speed.cloudflare.com/__down?bytes=50000000";
 
 fn active_wan_state(api: &mut ApiRos) -> Result<Option<String>, String> {
     let clients = api.talk(&["/ip/dhcp-client/print"]).map_err(|e| e.to_string())?;
@@ -95,6 +96,132 @@ pub fn read_wan_speed_impl() -> Result<String, String> {
 #[tauri::command]
 fn read_wan_speed() -> Result<String, String> {
     read_wan_speed_impl()
+}
+
+#[derive(Serialize)]
+struct WanSpeedMeasurement {
+    channel: String,
+    interface: String,
+    megabits_per_second: f64,
+    downloaded_bytes: u64,
+    duration_ms: u128,
+}
+
+#[derive(Serialize)]
+struct WanSpeedTestResult {
+    tested_at: String,
+    measurements: Vec<WanSpeedMeasurement>,
+}
+
+fn routeros_value<'a>(
+    rows: &'a [(String, std::collections::HashMap<String, String>)],
+    key: &str,
+) -> Option<&'a str> {
+    rows.iter()
+        .rev()
+        .find_map(|(_, attrs)| attrs.get(key).map(String::as_str))
+}
+
+fn wan_interface_address(api: &mut ApiRos, interface: &str) -> Result<String, String> {
+    let rows = api
+        .talk(&[
+            "/ip/address/print",
+            "=detail=",
+            &format!("?interface={interface}"),
+        ])
+        .map_err(|error| error.to_string())?;
+    rows.into_iter()
+        .find_map(|(reply, attrs)| {
+            (reply == "!re")
+                .then(|| attrs.get("=address"))
+                .flatten()
+                .and_then(|address| {
+                    address
+                        .split_once('/')
+                        .map(|(address, _)| address.to_string())
+                })
+        })
+        .ok_or_else(|| format!("RouterOS не має IPv4-адреси на {interface}"))
+}
+
+fn remove_router_file(api: &mut ApiRos, file_name: &str) {
+    let Ok(rows) = api.talk(&["/file/print", "=detail="]) else {
+        return;
+    };
+    for (reply, attrs) in rows {
+        if reply == "!re" && attrs.get("=name").map(String::as_str) == Some(file_name) {
+            if let Some(id) = attrs.get("=.id") {
+                let _ = api.talk(&["/file/remove", &format!("=numbers={id}")]);
+            }
+        }
+    }
+}
+
+fn run_wan_speed_measurement(
+    api: &mut ApiRos,
+    channel: &str,
+    interface: &str,
+) -> Result<WanSpeedMeasurement, String> {
+    let source_address = wan_interface_address(api, interface)?;
+    let file_name = format!(
+        "mymikrotik-speed-{channel}-{}.tmp",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let started = std::time::Instant::now();
+    let result = api.talk(&[
+        "/tool/fetch",
+        &format!("=url={WAN_SPEED_TEST_URL}"),
+        &format!("=src-address={source_address}"),
+        "=output=file",
+        &format!("=dst-path={file_name}"),
+    ]);
+    let duration = started.elapsed();
+    let result = result.map_err(|error| error.to_string());
+    remove_router_file(api, &file_name);
+    let rows = result?;
+    if let Some(message) = routeros_value(&rows, "=message") {
+        return Err(format!("{channel}: {message}"));
+    }
+    let downloaded_kib = routeros_value(&rows, "=downloaded")
+        .ok_or_else(|| format!("{channel}: RouterOS не повернув обсяг завантаження"))?
+        .parse::<u64>()
+        .map_err(|error| format!("{channel}: некоректний лічильник завантаження: {error}"))?;
+    let downloaded_bytes = downloaded_kib * 1024;
+    if downloaded_bytes == 0 || duration.is_zero() {
+        return Err(format!("{channel}: тест не передав дані"));
+    }
+    Ok(WanSpeedMeasurement {
+        channel: channel.to_string(),
+        interface: interface.to_string(),
+        megabits_per_second: downloaded_bytes as f64 * 8.0 / duration.as_secs_f64() / 1_000_000.0,
+        downloaded_bytes,
+        duration_ms: duration.as_millis(),
+    })
+}
+
+pub fn run_wan_speed_test_impl() -> Result<String, String> {
+    let mut api = connect_and_login(Duration::from_secs(120))?;
+    let device_mode = api
+        .talk(&["/system/device-mode/print"])
+        .map_err(|error| error.to_string())?;
+    if routeros_value(&device_mode, "=fetch") != Some("true") {
+        return Err("RouterOS Device Mode вимикає fetch; увімкніть fetch перед тестом".to_string());
+    }
+    let measurements = ["LMT", "BITE"]
+        .into_iter()
+        .zip(["ether3", "ether1"])
+        .map(|(channel, interface)| run_wan_speed_measurement(&mut api, channel, interface))
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::to_string(&WanSpeedTestResult {
+        tested_at: now_iso(),
+        measurements,
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_wan_speed_test() -> Result<String, String> {
+    run_wan_speed_test_impl()
 }
 
 // ---------- швидка діагностика доступності RouterOS ----------
@@ -466,7 +593,12 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_wan_speed, read_router_log, read_router_diagnostic])
+        .invoke_handler(tauri::generate_handler![
+            read_wan_speed,
+            run_wan_speed_test,
+            read_router_log,
+            read_router_diagnostic
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
