@@ -24,4 +24,12 @@ export const TOOLS = [
     input: {},
     tauri: "read_wan_speed",
   },
+  {
+    tier: "read",
+    name: "run_wan_speed_test",
+    summary:
+      "Measure LMT and BITE download throughput from the router with equal 50 MB Cloudflare downloads. Requires RouterOS fetch enabled and removes temporary test files.",
+    input: {},
+    tauri: "run_wan_speed_test",
+  },
 ];

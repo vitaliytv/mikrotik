@@ -1,37 +1,27 @@
 <template>
-  <div class="agent-toolbar">
-    <q-btn flat dense round icon="sym_o_smart_toy" title="Агент" @click="agentOpen = true" />
-    <q-btn flat dense round icon="sym_o_history" title="Журнал запитів агента" @click="auditOpen = true" />
-  </div>
+  <nav class="top-nav" aria-label="Розділи MyMikroTik">
+    <div class="top-nav-brand">
+      <strong>MyMikroTik</strong>
+      <span :class="['api-status', diagnosticLevel]">{{ overviewStatus }}</span>
+    </div>
+    <div class="top-nav-tabs" role="tablist">
+      <q-btn v-for="tab in navigationTabs" :key="tab.id" flat dense no-caps :class="{ active: activeTab === tab.id }" :label="tab.label" @click="activeTab = tab.id" />
+    </div>
+    <div class="agent-toolbar">
+      <q-btn flat dense round icon="sym_o_smart_toy" title="Агент" @click="agentOpen = true" />
+      <q-btn flat dense round icon="sym_o_history" title="Журнал запитів агента" @click="auditOpen = true" />
+    </div>
+  </nav>
 
-  <section class="diagnostic-mode" aria-label="Діагностичний режим">
+  <section v-if="activeTab === 'overview'" class="page" aria-label="Огляд">
+    <PageGuide title="Огляд" purpose="Швидко показує, чи доступний роутер і який WAN зараз обслуговує мережу." readings="LMT — основний канал, BITE — резервний. API latency — час відповіді RouterOS." actions="Кнопка оновлення повторює read-only перевірку; вона не змінює конфігурацію." when="Відкривайте першою, коли інтернет працює не так, як очікується." />
     <header>
       <div>
-        <h1>Діагностичний режим</h1>
+        <h1>Стан мережі</h1>
         <div class="controls"><span>{{ diagnosticStatus }}</span></div>
       </div>
       <div class="diagnostic-actions">
-        <q-btn
-          dense
-          unelevated
-          :color="diagnosticRunning ? 'negative' : 'primary'"
-          :icon="diagnosticRunning ? 'sym_o_pause_circle' : 'sym_o_monitor_heart'"
-          :label="diagnosticRunning ? 'Зупинити' : 'Почати очікування'"
-          @click="toggleDiagnostic"
-        >
-          <q-tooltip>{{ diagnosticRunning ? 'Зупинити перевірку кожні 5 секунд' : 'Перевіряти RouterOS кожні 5 секунд' }}</q-tooltip>
-        </q-btn>
         <q-btn flat dense round icon="sym_o_refresh" title="Перевірити зараз" @click="pollDiagnostic" />
-        <q-btn
-          dense
-          outline
-          icon="sym_o_summarize"
-          label="Зібрати звіт"
-          :loading="reportBusy"
-          @click="captureDiagnosticReport()"
-        >
-          <q-tooltip>Зберегти повний read-only звіт для передачі в чат</q-tooltip>
-        </q-btn>
       </div>
     </header>
     <div class="diagnostic-grid">
@@ -52,45 +42,64 @@
       </div>
     </div>
     <div v-if="diagnosticError" class="diagnostic-error">{{ diagnosticError }}</div>
+    <div class="box overview-cards">
+      <div v-for="card in controllerCards" :key="card.channel" :class="['nw-card', card.status]">
+        <div class="title">{{ card.title }}</div>
+        <div class="detail">{{ card.detail1 }}</div>
+        <div class="detail">{{ card.detail2 }}</div>
+      </div>
+    </div>
     <table class="events diagnostic-history">
       <thead>
         <tr><th>Час</th><th>Подія</th><th>Деталі</th></tr>
       </thead>
       <tbody>
-        <tr v-for="entry in diagnosticHistory" :key="entry.id" :class="entry.level">
+        <tr v-for="entry in recentDiagnosticHistory" :key="entry.id" :class="entry.level">
           <td>{{ entry.time }}</td><td>{{ entry.label }}</td><td>{{ entry.detail }}</td>
         </tr>
-        <tr v-if="!diagnosticHistory.length"><td colspan="3">Подій ще немає.</td></tr>
+        <tr v-if="!recentDiagnosticHistory.length"><td colspan="3">Подій ще немає.</td></tr>
       </tbody>
     </table>
-    <div v-if="diagnosticReport" class="diagnostic-report">
-      <div class="diagnostic-report-toolbar">
-        <span>Автономний звіт для чату</span>
-        <q-btn flat dense icon="sym_o_content_copy" label="Скопіювати" @click="copyDiagnosticReport" />
-      </div>
-      <textarea ref="diagnosticReportEl" readonly :value="diagnosticReport" aria-label="Автономний звіт діагностики"></textarea>
-    </div>
   </section>
 
-  <header style="margin-top: 28px">
-    <h1>Трафік на WAN-інтерфейсах (середнє за 1 хв)</h1>
-    <div class="controls">
-      <span>{{ speedStatus }}</span>
-    </div>
-  </header>
-  <div class="charts">
-    <div class="box"><canvas ref="speedCanvasEl"></canvas></div>
-  </div>
+  <section v-if="activeTab === 'channels'" class="page" aria-label="Канали">
+    <PageGuide title="Канали" purpose="Показує поточне використання LMT і BITE без створення тестового трафіку." readings="↓ — download, ↑ — upload; графік згладжений за одну хвилину. Нуль не означає несправність — можливо, зараз немає трафіку." actions="Дій на цій сторінці немає: дані оновлюються автоматично кожні 15 секунд." when="Використовуйте, щоб побачити, який канал реально навантажений." />
+    <header><h1>Трафік на WAN-інтерфейсах</h1><div class="controls"><span>{{ speedStatus }}</span></div></header>
+    <div class="charts"><div class="box"><canvas ref="speedCanvasEl"></canvas></div></div>
+  </section>
 
-  <header style="margin-top: 28px">
-    <h1>Стан dual-WAN scheduler</h1>
-    <div class="controls">
-      <span>{{ routerStatus }}</span>
+  <section v-if="activeTab === 'speed-test'" class="page speed-test" aria-label="Тест швидкості WAN">
+    <PageGuide title="Тест швидкості" purpose="Порівнює практичну download-швидкість LMT і BITE з самого роутера." readings="Mbps — швидкість завантаження до Cloudflare; тривалість та обсяг пояснюють результат." actions="Тест завантажує по 50 MB через кожен канал, не змінює маршрути та видаляє тимчасові файли." when="Запускайте рідко: для порівняння каналів або перевірки скарги на повільний інтернет." />
+    <header>
+      <div>
+        <h1>Тест швидкості WAN з роутера</h1>
+        <div class="controls"><span>Завантажує 50 MB з Cloudflare окремо через LMT і BITE.</span></div>
+      </div>
+      <q-btn
+        color="primary"
+        icon="sym_o_speed"
+        :loading="wanSpeedTestBusy"
+        :disable="wanSpeedTestBusy"
+        :label="wanSpeedTestBusy ? 'Тестування…' : 'Запустити тест'"
+        @click="runWanSpeedTest"
+      />
+    </header>
+    <div v-if="wanSpeedTestResult" class="speed-test-result box">
+      <div v-for="measurement in wanSpeedTestResult.measurements" :key="measurement.channel" class="speed-test-measurement">
+        <strong>{{ measurement.channel }}: {{ measurement.megabits_per_second.toFixed(1) }} Mbps</strong>
+        <small>{{ formatMegabytes(measurement.downloaded_bytes) }} MB за {{ formatSeconds(measurement.duration_ms) }} с через {{ measurement.interface }}</small>
+      </div>
+      <small class="speed-test-time">Останній тест: {{ formatTestTime(wanSpeedTestResult.tested_at) }}</small>
     </div>
-  </header>
-  <div class="charts">
-    <div class="box"><canvas ref="wanTimelineCanvasEl"></canvas></div>
-    <div class="box">
+    <div v-if="wanSpeedTestError" class="diagnostic-error">{{ wanSpeedTestError }}</div>
+  </section>
+
+  <section v-if="activeTab === 'events'" class="page" aria-label="Події">
+    <PageGuide title="Події" purpose="Пояснює, коли змінювався активний WAN і чи працює failover controller." readings="Timeline показує активний канал у часі; таблиця — причину кожного перемикання." actions="Оновлення отримує актуальні RouterOS події. Звіт збирає read-only дані для передачі в чат." when="Відкривайте після перемикання каналу або коли потрібно розібрати причину проблеми." />
+    <header><h1>Стан dual-WAN scheduler</h1><div class="controls"><span>{{ routerStatus }}</span><q-btn flat dense round icon="sym_o_refresh" title="Оновити події" @click="loadRouterLog" /><q-btn dense outline icon="sym_o_summarize" label="Зібрати звіт" :loading="reportBusy" @click="captureDiagnosticReport()" /></div></header>
+    <div class="charts">
+      <div class="box"><canvas ref="wanTimelineCanvasEl"></canvas></div>
+      <div class="box">
       <div class="netwatch-cards">
         <div v-for="card in controllerCards" :key="card.channel" :class="['nw-card', card.status]">
           <div class="title">{{ card.title }}</div>
@@ -114,9 +123,17 @@
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
-  </div>
-  <div class="box raw-log">
+    <div v-if="diagnosticReport" class="diagnostic-report">
+      <div class="diagnostic-report-toolbar"><span>Автономний звіт для чату</span><q-btn flat dense icon="sym_o_content_copy" label="Скопіювати" @click="copyDiagnosticReport" /></div>
+      <textarea ref="diagnosticReportEl" readonly :value="diagnosticReport" aria-label="Автономний звіт діагностики"></textarea>
+    </div>
+  </section>
+
+  <section v-if="activeTab === 'log'" class="page" aria-label="Лог">
+    <PageGuide title="Лог" purpose="Дає повні RouterOS записи для глибокої діагностики." readings="Кожен рядок містить час, тему та текст RouterOS. Фільтр звужує список лише у вікні." actions="Оновити запитує останні записи з роутера; показати/сховати керує лише їх відображенням." when="Відкривайте, якщо `Огляд` або `Події` не пояснили проблему." />
+    <div class="box raw-log">
     <div class="raw-log-toolbar">
       <span>Сирий лог MikroTik (останні <span>{{ filteredRawLog.length }}</span> рядків)</span>
       <button @click="loadRouterLog">Оновити лог</button>
@@ -124,14 +141,15 @@
       <input type="text" v-model="rawLogFilter" placeholder="Фільтр по тексту…" autocomplete="off" />
     </div>
     <pre class="raw-log-view" v-show="rawLogVisible">{{ rawLogText }}</pre>
-  </div>
+    </div>
+  </section>
 
   <AgentDialog v-model="agentOpen" @ran="loadRouterLog" :agent="agent" prompt-hint="наприклад: чи є зараз проблеми зі швидкістю?" />
   <AuditDialog v-model="auditOpen" :agent="agent" />
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import { AgentDialog, AuditDialog } from "@7n/tauri-components/components";
 import { useUpdater } from "@7n/tauri-components/vue";
@@ -140,6 +158,29 @@ import { useAcpAgent } from "./composables/use-acp-agent.js";
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const $q = useQuasar();
+
+const PageGuide = defineComponent({
+  name: "PageGuide",
+  props: {
+    title: { type: String, required: true },
+    purpose: { type: String, required: true },
+    readings: { type: String, required: true },
+    actions: { type: String, required: true },
+    when: { type: String, required: true },
+  },
+  setup(props) {
+    const rows = [
+      ["Навіщо", props.purpose],
+      ["Показники", props.readings],
+      ["Дії", props.actions],
+      ["Коли", props.when],
+    ];
+    return () => h("aside", { class: "page-guide", "aria-label": `Довідка: ${props.title}` }, [
+      h("strong", "Що тут"),
+      h("dl", rows.map(([label, text]) => h("div", [h("dt", label), h("dd", text)]))),
+    ]);
+  },
+});
 
 useUpdater();
 
@@ -164,6 +205,14 @@ const rawLogVisible = ref(false);
 const agent = useAcpAgent();
 const agentOpen = ref(false);
 const auditOpen = ref(false);
+const activeTab = ref("overview");
+const navigationTabs = [
+  { id: "overview", label: "Огляд" },
+  { id: "channels", label: "Канали" },
+  { id: "speed-test", label: "Тест швидкості" },
+  { id: "events", label: "Події" },
+  { id: "log", label: "Лог" },
+];
 
 const filteredRawLog = computed(() => {
   const filter = rawLogFilter.value.trim().toLowerCase();
@@ -180,6 +229,7 @@ const rawLogText = computed(() =>
     .join("\n"),
 );
 
+const recentDiagnosticHistory = computed(() => diagnosticHistory.value.slice(0, 5));
 const recentEvents = computed(() => events.value.slice(-300).reverse());
 
 let refreshTimer = null;
@@ -204,6 +254,9 @@ const wanTimeline = ref(loadWanTimeline());
 const diagnosticReportEl = ref(null);
 const diagnosticReport = ref(localStorage.getItem("mymikrotik.diagnostic-report.v1") || "");
 const reportBusy = ref(false);
+const wanSpeedTestBusy = ref(false);
+const wanSpeedTestResult = ref(null);
+const wanSpeedTestError = ref("");
 
 function loadDiagnosticHistory() {
   try {
@@ -240,6 +293,14 @@ function recordWanTimeline(snapshot) {
 const diagnosticLevel = computed(() => {
   if (!diagnosticSnapshot.value) return "unknown";
   return diagnosticSnapshot.value.api_reachable ? "healthy" : "failed";
+});
+
+const overviewStatus = computed(() => {
+  const snapshot = diagnosticSnapshot.value;
+  if (!snapshot) return "Перевіряю RouterOS";
+  if (!snapshot.api_reachable) return "RouterOS недоступний";
+  const active = snapshot.controller_state?.toUpperCase() || "невідомий WAN";
+  return `RouterOS доступний · ${active}`;
 });
 
 const diagnosticStatus = computed(() => {
@@ -444,6 +505,34 @@ function toggleDiagnostic() {
   else startDiagnostic();
 }
 
+function formatMegabytes(bytes) {
+  return (bytes / 1_000_000).toFixed(1);
+}
+
+function formatSeconds(milliseconds) {
+  return (milliseconds / 1000).toFixed(2);
+}
+
+function formatTestTime(value) {
+  return value ? new Date(value).toLocaleString("sv-SE") : "—";
+}
+
+async function runWanSpeedTest() {
+  if (wanSpeedTestBusy.value) return;
+  wanSpeedTestBusy.value = true;
+  wanSpeedTestError.value = "";
+  try {
+    wanSpeedTestResult.value = JSON.parse(await invoke("run_wan_speed_test"));
+    const summary = wanSpeedTestResult.value.measurements.map((measurement) => `${measurement.channel} ${measurement.megabits_per_second.toFixed(1)} Mbps`).join("; ");
+    $q.notify({ type: "positive", message: `Тест швидкості завершено: ${summary}`, position: "top", timeout: 7000 });
+  } catch (error) {
+    wanSpeedTestError.value = String(error);
+    $q.notify({ type: "negative", message: "Тест швидкості WAN не виконався", position: "top", timeout: 7000 });
+  } finally {
+    wanSpeedTestBusy.value = false;
+  }
+}
+
 // ---------- пасивний моніторинг трафіку (кожні 15с, поки застосунок відкритий) ----------
 
 function fmtClock(d) {
@@ -492,6 +581,8 @@ function speedDatasets() {
 }
 
 function renderSpeedChart() {
+  if (!speedCanvasEl.value) return;
+
   const labels = liveSamples.map((s) => fmtClock(s.ts));
   const n = liveSamples.length;
 
@@ -692,9 +783,26 @@ onMounted(() => {
   if (diagnosticRunning.value) startDiagnostic();
 });
 
+watch(activeTab, async (tab, previousTab) => {
+  if (previousTab === "channels" && speedChart) {
+    speedChart.destroy();
+    speedChart = null;
+  }
+  if (previousTab === "events" && wanTimelineChart) {
+    wanTimelineChart.destroy();
+    wanTimelineChart = null;
+  }
+
+  await nextTick();
+  if (tab === "channels") renderSpeedChart();
+  if (tab === "events") renderWanTimeline();
+});
+
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer);
   if (diagnosticTimer) clearInterval(diagnosticTimer);
   if (reconnectTimer) clearTimeout(reconnectTimer);
+  speedChart?.destroy();
+  wanTimelineChart?.destroy();
 });
 </script>
