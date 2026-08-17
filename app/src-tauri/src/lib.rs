@@ -426,6 +426,8 @@ struct RouterLogResult {
     dhcp: Vec<DhcpInfo>,
     routes: Vec<RouteInfo>,
     switch_events: Vec<SwitchEvent>,
+    history_source: String,
+    history_file_count: usize,
     raw_log: Vec<RawLogLine>,
     log_total_lines: usize,
 }
@@ -435,6 +437,93 @@ fn controller_state(api: &mut ApiRos) -> String {
         .ok()
         .flatten()
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn switch_event(time: String, message: &str) -> Option<SwitchEvent> {
+    let rest = message.strip_prefix("DUALWAN state=")?;
+    let mut parts = rest.split_whitespace();
+    let state = parts.next()?.to_lowercase();
+    if !matches!(state.as_str(), "lmt" | "bite") {
+        return None;
+    }
+    let reason = parts
+        .find_map(|part| part.strip_prefix("reason="))
+        .unwrap_or_default()
+        .to_string();
+    Some(SwitchEvent {
+        time,
+        state,
+        reason,
+    })
+}
+
+fn disk_log_time(time: &str) -> Option<String> {
+    chrono::NaiveDateTime::parse_from_str(time, "%b/%d/%Y %H:%M:%S")
+        .ok()
+        .map(|parsed| parsed.format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+fn disk_switch_events(api: &mut ApiRos) -> Result<(Vec<SwitchEvent>, usize), String> {
+    let rows = api
+        .talk(&["/file/print"])
+        .map_err(|error| error.to_string())?;
+    let mut events = Vec::new();
+    let mut file_count = 0;
+
+    for (reply, attrs) in rows {
+        if reply != "!re" {
+            continue;
+        }
+        let name = attrs.get("=name").map(String::as_str).unwrap_or_default();
+        if !name.starts_with("dualwan-history.") || !name.ends_with(".txt") {
+            continue;
+        }
+        file_count += 1;
+        let contents = attrs
+            .get("=contents")
+            .map(String::as_str)
+            .unwrap_or_default();
+        for line in contents.lines() {
+            let Some((logged_at, message)) = line.split_once(" script,warning ") else {
+                continue;
+            };
+            let Some(time) = disk_log_time(logged_at) else {
+                continue;
+            };
+            if let Some(event) = switch_event(time, message) {
+                events.push(event);
+            }
+        }
+    }
+
+    events.sort_by(|left, right| left.time.cmp(&right.time));
+    events.dedup_by(|left, right| {
+        left.time == right.time && left.state == right.state && left.reason == right.reason
+    });
+    Ok((events, file_count))
+}
+
+#[cfg(test)]
+mod disk_history_tests {
+    use super::{disk_log_time, switch_event};
+
+    #[test]
+    fn parses_disk_history_record() {
+        let event = switch_event(
+            disk_log_time("Aug/17/2026 09:57:13").expect("RouterOS disk timestamp"),
+            "DUALWAN state=lmt reason=disk-history-start",
+        )
+        .expect("DUALWAN event");
+
+        assert_eq!(event.time, "2026-08-17 09:57:13");
+        assert_eq!(event.state, "lmt");
+        assert_eq!(event.reason, "disk-history-start");
+    }
+
+    #[test]
+    fn ignores_non_wan_disk_record() {
+        assert!(switch_event("2026-08-17 09:57:13".to_string(), "login failure").is_none());
+    }
 }
 
 pub fn read_router_log_impl() -> Result<String, String> {
@@ -513,29 +602,7 @@ pub fn read_router_log_impl() -> Result<String, String> {
     let log_rows = api.talk(&["/log/print"]).map_err(|e| e.to_string())?;
     let log_rows: Vec<_> = log_rows.into_iter().filter(|(r, _)| r == "!re").collect();
 
-    let mut switch_events = Vec::new();
-    let mut seen_switches = std::collections::HashSet::new();
-    for (_, attrs) in &log_rows {
-        let msg = attrs.get("=message").cloned().unwrap_or_default();
-        let t = attrs.get("=time").cloned().unwrap_or_default();
-        if let Some(rest) = msg.strip_prefix("DUALWAN state=") {
-            let mut parts = rest.split_whitespace();
-            let state = parts.next().unwrap_or_default().to_string();
-            let reason = parts
-                .find_map(|part| part.strip_prefix("reason="))
-                .unwrap_or_default()
-                .to_string();
-            let key = (t.clone(), state.clone(), reason.clone());
-            if !seen_switches.insert(key) {
-                continue;
-            }
-            switch_events.push(SwitchEvent {
-                time: t,
-                state,
-                reason,
-            });
-        }
-    }
+    let (switch_events, history_file_count) = disk_switch_events(&mut api)?;
 
     let log_total_lines = log_rows.len();
     let raw_log: Vec<RawLogLine> = log_rows
@@ -556,6 +623,8 @@ pub fn read_router_log_impl() -> Result<String, String> {
         dhcp,
         routes,
         switch_events,
+        history_source: "disk".to_string(),
+        history_file_count,
         raw_log,
         log_total_lines,
     };

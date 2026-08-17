@@ -95,7 +95,7 @@
   </section>
 
   <section v-if="activeTab === 'events'" class="page" aria-label="Події">
-    <PageGuide title="Події" purpose="Пояснює, коли змінювався активний WAN і чи працює failover controller." readings="Timeline показує активний канал у часі; таблиця — причину кожного перемикання." actions="Оновлення отримує актуальні RouterOS події. Звіт збирає read-only дані для передачі в чат." when="Відкривайте після перемикання каналу або коли потрібно розібрати причину проблеми." />
+    <PageGuide title="Події" purpose="Пояснює, коли змінювався активний WAN і чи працює failover controller." readings="Timeline і таблиця будуються тільки з постійного `dualwan-history` на диску RouterOS; останній відрізок продовжується поточним станом." actions="Оновлення читає диск і актуальні RouterOS дані без зміни конфігурації. Звіт збирає read-only дані для передачі в чат." when="Відкривайте після перемикання каналу або коли потрібно розібрати причину проблеми." />
     <header><h1>Стан dual-WAN scheduler</h1><div class="controls"><span>{{ routerStatus }}</span><q-btn flat dense round icon="sym_o_refresh" title="Оновити події" @click="loadRouterLog" /><q-btn dense outline icon="sym_o_summarize" label="Зібрати звіт" :loading="reportBusy" @click="captureDiagnosticReport()" /></div></header>
     <div class="charts">
       <div class="box"><canvas ref="wanTimelineCanvasEl"></canvas></div>
@@ -241,16 +241,12 @@ const DIAGNOSTIC_INTERVAL_MS = 5000;
 const ROUTER_RECONNECT_INTERVAL_MS = 5000;
 const DIAGNOSTIC_HISTORY_KEY = "mymikrotik.diagnostic-history.v1";
 const DIAGNOSTIC_ACTIVE_KEY = "mymikrotik.diagnostic-active.v1";
-const WAN_TIMELINE_KEY = "mymikrotik.wan-timeline.v1";
-const WAN_TIMELINE_MAX_POINTS = 2000;
-const WAN_TIMELINE_HEARTBEAT_MS = 5 * 60 * 1000;
 
 const diagnosticRunning = ref(localStorage.getItem(DIAGNOSTIC_ACTIVE_KEY) === "true");
 const diagnosticSnapshot = ref(null);
 const diagnosticError = ref("");
 const reconnecting = ref(false);
 const diagnosticHistory = ref(loadDiagnosticHistory());
-const wanTimeline = ref(loadWanTimeline());
 const diagnosticReportEl = ref(null);
 const diagnosticReport = ref(localStorage.getItem("mymikrotik.diagnostic-report.v1") || "");
 const reportBusy = ref(false);
@@ -265,29 +261,6 @@ function loadDiagnosticHistory() {
   } catch {
     return [];
   }
-}
-
-function loadWanTimeline() {
-  try {
-    const value = JSON.parse(localStorage.getItem(WAN_TIMELINE_KEY) || "[]");
-    return Array.isArray(value)
-      ? value.filter((point) => ["lmt", "bite"].includes(point?.state) && !Number.isNaN(new Date(point.ts).getTime())).slice(-WAN_TIMELINE_MAX_POINTS)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function recordWanTimeline(snapshot) {
-  const state = snapshot?.controller_state?.toLowerCase();
-  if (!snapshot?.api_reachable || !["lmt", "bite"].includes(state)) return;
-  const ts = new Date(snapshot.checked_at || Date.now()).toISOString();
-  const last = wanTimeline.value.at(-1);
-  const elapsed = last ? new Date(ts).getTime() - new Date(last.ts).getTime() : Infinity;
-  if (last?.state === state && elapsed < WAN_TIMELINE_HEARTBEAT_MS) return;
-  wanTimeline.value = [...wanTimeline.value, { ts, state }].slice(-WAN_TIMELINE_MAX_POINTS);
-  localStorage.setItem(WAN_TIMELINE_KEY, JSON.stringify(wanTimeline.value));
-  renderWanTimeline();
 }
 
 const diagnosticLevel = computed(() => {
@@ -371,7 +344,6 @@ async function pollDiagnostic() {
     const snapshot = JSON.parse(await invoke("read_router_diagnostic"));
     diagnosticSnapshot.value = snapshot;
     diagnosticError.value = snapshot.error || "";
-    recordWanTimeline(snapshot);
     if (snapshot.api_reachable) clearReconnectTimer();
     else scheduleReconnect();
     if (snapshotKey(previous || {}) !== snapshotKey(snapshot)) {
@@ -653,10 +625,9 @@ function parseLogTime(t) {
 }
 
 function timelinePoints() {
-  const points = [
-    ...events.value.filter((event) => !Number.isNaN(event.ts?.getTime())).map((event) => ({ ts: event.ts.toISOString(), state: event.state, source: "router" })),
-    ...wanTimeline.value.map((point) => ({ ...point, source: "local" })),
-  ]
+  const points = events.value
+    .filter((event) => !Number.isNaN(event.ts?.getTime()))
+    .map((event) => ({ ts: event.ts.toISOString(), state: event.state, source: "disk" }))
     .filter((point) => ["lmt", "bite"].includes(point.state))
     .sort((a, b) => new Date(a.ts) - new Date(b.ts));
 
@@ -667,7 +638,7 @@ function timelinePoints() {
     result.push(point);
   }
   const current = diagnosticSnapshot.value?.controller_state?.toLowerCase();
-  if (["lmt", "bite"].includes(current) && result.at(-1)?.state !== current) {
+  if (["lmt", "bite"].includes(current) && result.at(-1)?.state === current) {
     result.push({ ts: new Date().toISOString(), state: current, source: "current" });
   }
   return result;
@@ -757,7 +728,8 @@ async function loadRouterLog() {
     controllerCards.value = buildControllerCards(data);
     renderWanTimeline();
     const controller = data.controller || {};
-    routerStatus.value = `scheduler ${controller.scheduler_enabled === "true" ? "активний" : "недоступний"} | ${controller.interval || "?"} | активний: ${(controller.state || "?").toUpperCase()} | запусків: ${controller.scheduler_runs || "?"}`;
+    const history = `історія: disk (${data.history_file_count || 0} файл.)`;
+    routerStatus.value = `scheduler ${controller.scheduler_enabled === "true" ? "активний" : "недоступний"} | ${controller.interval || "?"} | активний: ${(controller.state || "?").toUpperCase()} | ${history} | запусків: ${controller.scheduler_runs || "?"}`;
   } catch (e) {
     routerStatus.value = `RouterOS недоступний. Повторне підключення: ${e}`;
   } finally {
