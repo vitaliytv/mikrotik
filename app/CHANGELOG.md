@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.10] - 2026-08-17
+
+### Changed
+
+- release: mymikrotik@0.5.9
+
 ## [0.5.9] - 2026-08-17
 
 ### Fixed
