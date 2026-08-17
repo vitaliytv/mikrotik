@@ -3,9 +3,8 @@ type: Vue Component
 title: App.vue
 resource: app/src/App.vue
 docgen:
-  crc: ac516b47
+  crc: fd799d77
   model: omlx/gemma-4-26b-a4b-it
-  tier: local-min
   score: 100
   issues: judge-refine:kept-original,judge:inaccurate:0.98
   judgeModel: openai-codex/gpt-5.4-mini

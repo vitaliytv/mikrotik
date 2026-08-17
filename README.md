@@ -28,9 +28,9 @@ MIKROTIK_PASS=твій_пароль
   маршруту.
 - **IPv6:** не налаштований. IPv6 DHCPv6-клієнт LMT видалено 2026-07-15,
   оскільки modem не видавав адресу або delegated prefix.
-- **backups/routeros-current.rsc** — актуальний санітизований текстовий
-  export RouterOS; password/passphrase/secret значення замінені на
-  `<redacted>`.
+- **backups/routeros-current.rsc** — санітизований текстовий export RouterOS;
+  password/passphrase/secret значення замінені на `<redacted>`. Єдиний
+  failover controller у ньому — симетричний `DUALWAN-health`.
 - **app/** — десктопний Tauri-застосунок (macOS), увесь бекенд на Rust
   (`app/src-tauri/src/routeros.rs` + `lib.rs`), без жодного python:
   - Read-only перегляд фактичного rx/tx-трафіку `ether3` (LMT) та `ether1`

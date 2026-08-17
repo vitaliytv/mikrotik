@@ -49,109 +49,55 @@ add dont-require-permissions=no name=finalize owner=admin policy=\
     ecurity.passphrase=<redacted> } on-error={}\
     \n:delay 2s\
     \n/system/reboot"
-add comment="LMT-primary dual-WAN health controller" \
+add comment="Symmetric dual-WAN health controller" \
     dont-require-permissions=no name=DUALWAN-health owner=admin policy=\
-    read,write,policy,test source=":global dwState\
-    \n:global dwLmtBad\
-    \n:global dwLmtGood\
-    \n:global dwLmtQualityBad\
-    \n:global dwLmtQualityState\
-    \n:global dwLastDecision\
+    read,write,policy,test source="# Exactly one RouterOS failover controller. Both WANs use the same health rule.\
+    \n:if ([/system script job print count-only as-value where script=[:jobname]] > 1) do={ :error \"DUALWAN-health is already running\" }\
     \n\
-    \n:if ([:typeof \$dwState] = \"nothing\") do={ :set dwState \"lmt\" }\
-    \n:if ([:typeof \$dwLmtBad] = \"nothing\") do={ :set dwLmtBad 0 }\
-    \n:if ([:typeof \$dwLmtGood] = \"nothing\") do={ :set dwLmtGood 0 }\
-    \n:if ([:typeof \$dwLmtQualityBad] = \"nothing\") do={ :set dwLmtQualityBad 0 }\
-    \n:if ([:typeof \$dwLmtQualityState] = \"nothing\") do={ :set dwLmtQualityState \"healthy\" }\
+    \n:global dwActiveBad\
+    \n:global dwActiveState\
+    \n:if ([:typeof \$dwActiveBad] = \"nothing\") do={ :set dwActiveBad 0 }\
     \n\
-    \n:local gwLmt [/ip dhcp-client get [find name=\"client2\"] gateway]\
-    \n:local probeLmt [/ip route find comment=\"DUALWAN-probe-lmt\"]\
-    \n:local probePublic [/ip route find comment=\"DUALWAN-probe-lmt-public\"]\
-    \n:if (([:len \$gwLmt] > 0) && ([:len \$probeLmt] > 0)) do={\
-    \n  :if ([/ip route get \$probeLmt gateway] != \$gwLmt) do={ /ip route set\
-    \_\$probeLmt gateway=\$gwLmt }\
+    \n# Initialize once after reboot from the installed main-route priority.\
+    \n:if ([:typeof \$dwActiveState] = \"nothing\") do={\
+    \n  :set dwActiveState \"bite\"\
+    \n  :local lmtTables [/ip dhcp-client get [find where name=\"client2\"] default-route-tables]\
+    \n  :if (([:len \$lmtTables] >= 6) && ([:pick \$lmtTables 0 6] = \"main:1\")) do={ :set dwActiveState \"lmt\" }\
     \n}\
-    \n:if (([:len \$gwLmt] > 0) && ([:len \$probePublic] > 0)) do={\
-    \n  :if ([/ip route get \$probePublic gateway] != \$gwLmt) do={ /ip route set\
-    \_\$probePublic gateway=\$gwLmt }\
-    \n}\
-    \n# Both LMT probe gateways follow its DHCP lease; BITE is blind reserve\
-    \n:local edgeReceived 0\
-    \n:foreach reply in=[/ping address=212.93.105.242 count=3 interval=200ms as-value] do={\
-    \n  :if ((\$reply->\"status\") != \"timeout\") do={ :set edgeReceived (\$edgeReceived + 1) }\
-    \n}\
-    \n:local publicReceived 0\
-    \n:foreach reply in=[/ping address=1.1.1.1 count=3 interval=200ms as-value] do={\
-    \n  :if ((\$reply->\"status\") != \"timeout\") do={ :set publicReceived (\$publicReceived + 1) }\
-    \n}\
-    \n:local lmtGood ((\$edgeReceived >= 2) || (\$publicReceived >= 2))\
-    \n:local lmtLossDegraded ((\$edgeReceived < 3) && (\$publicReceived < 3))\
-    \n:local next \$dwState\
-    \n:local reason \"hold\"\
     \n\
-    \n# Telemetry only: 12 consecutive 5s cycles with loss on both targets = 60s.\
-    \n:if (\$lmtLossDegraded) do={\
-    \n  :set dwLmtQualityBad (\$dwLmtQualityBad + 1)\
-    \n  :if ((\$dwLmtQualityBad >= 12) && (\$dwLmtQualityState != \"degraded\")) do={\
-    \n    :log warning (\"DUALWAN quality=lmt-loss-degraded window=60s edge-received=\" . \$edgeReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
-    \n    :set dwLmtQualityState \"degraded\"\
-    \n  }\
+    \n:local current \$dwActiveState\
+    \n:local activeInterface \"ether1\"\
+    \n:if (\$current = \"lmt\") do={ :set activeInterface \"ether3\" }\
+    \n:local edgeReceived [/ping address=212.93.105.242 interface=\$activeInterface count=3 interval=200ms]\
+    \n:local publicReceived [/ping address=1.1.1.1 interface=\$activeInterface count=3 interval=200ms]\
+    \n:local activeGood ((\$edgeReceived >= 2) || (\$publicReceived >= 2))\
+    \n:local next \$current\
+    \n:local reason \"active-healthy\"\
+    \n\
+    \n:if (\$activeGood) do={\
+    \n  :set dwActiveBad 0\
     \n} else={\
-    \n  :if (\$dwLmtQualityState = \"degraded\") do={ :log warning \"DUALWAN quality=lmt-loss-recovered\" }\
-    \n  :set dwLmtQualityBad 0\
-    \n  :set dwLmtQualityState \"healthy\"\
-    \n}\
-    \n\
-    \n:if (\$dwState = \"lmt\") do={\
-    \n  :if (\$lmtGood) do={\
-    \n    :set dwLmtBad 0\
-    \n    :set dwLmtGood 0\
-    \n    :set reason \"lmt-primary-healthy\"\
-    \n  } else={\
-    \n    :set dwLmtBad (\$dwLmtBad + 1)\
-    \n    :if (\$dwLmtBad >= 3) do={\
-    \n      :set next \"bite\"\
-    \n      :set dwLmtBad 0\
-    \n      :set dwLmtGood 0\
-    \n      :set reason \"lmt-both-probes-failed-3x-blind-fallback\"\
-    \n    } else={\
-    \n      :set reason \"lmt-both-probes-degraded-keep-primary\"\
-    \n    }\
-    \n  }\
-    \n} else={\
-    \n  :if (\$lmtGood) do={ :set dwLmtGood (\$dwLmtGood + 1) } else={ :set dw\
-    LmtGood 0 }\
-    \n  :if (\$dwLmtGood >= 6) do={\
-    \n    :set next \"lmt\"\
-    \n    :set dwLmtBad 0\
-    \n    :set dwLmtGood 0\
-    \n    :set reason \"lmt-recovered-30s\"\
-    \n  } else={\
-    \n    :set reason \"bite-backup-hold\"\
+    \n  :set dwActiveBad (\$dwActiveBad + 1)\
+    \n  :set reason \"active-probes-degraded-keep-current\"\
+    \n  :if (\$dwActiveBad >= 3) do={\
+    \n    :if (\$current = \"lmt\") do={ :set next \"bite\" } else={ :set next \"lmt\" }\
+    \n    :set dwActiveBad 0\
+    \n    :set reason \"active-probes-degraded-3x-switch-next\"\
     \n  }\
     \n}\
     \n\
-    \n:if (\$next != \$dwState) do={\
+    \n:if (\$next != \$current) do={\
     \n  :if (\$next = \"bite\") do={\
-    \n    /ip dhcp-client set [find name=\"client1\"] default-route-tables=\"m\
-    ain:1,to_WAN1:1,to_WAN2:1\"\
+    \n    /ip dhcp-client set [find where name=\"client1\"] default-route-tables=\"main:1,to_WAN1:1,to_WAN2:1\"\
     \n    :delay 1s\
-    \n    /ip dhcp-client set [find name=\"client2\"] default-route-tables=\"m\
-    ain:2,to_WAN1:2,to_WAN2:2\"\
+    \n    /ip dhcp-client set [find where name=\"client2\"] default-route-tables=\"main:2,to_WAN1:2,to_WAN2:2\"\
     \n  } else={\
-    \n    /ip dhcp-client set [find name=\"client2\"] default-route-tables=\"m\
-    ain:1,to_WAN1:1,to_WAN2:2\"\
+    \n    /ip dhcp-client set [find where name=\"client2\"] default-route-tables=\"main:1,to_WAN1:1,to_WAN2:2\"\
     \n    :delay 1s\
-    \n    /ip dhcp-client set [find name=\"client1\"] default-route-tables=\"m\
-    ain:2,to_WAN1:2,to_WAN2:1\"\
+    \n    /ip dhcp-client set [find where name=\"client1\"] default-route-tables=\"main:2,to_WAN1:2,to_WAN2:1\"\
     \n  }\
-    \n  :set dwState \$next\
-    \n}\
-    \n\
-    \n:if (\$dwLastDecision != \$dwState) do={\
-    \n  :log warning (\"DUALWAN state=\" . \$dwState . \" reason=\" . \$reason\
-    \_. \" edge-received=\" . \$edgeReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
-    \n  :set dwLastDecision \$dwState\
+    \n  :set dwActiveState \$next\
+    \n  :log warning (\"DUALWAN state=\" . \$next . \" from=\" . \$current . \" reason=\" . \$reason . \" interface=\" . \$activeInterface . \" edge-received=\" . \$edgeReceived . \"/3 public-received=\" . \$publicReceived . \"/3\")\
     \n}"
 /disk settings
 set auto-media-interface=bridge auto-media-sharing=yes auto-smb-sharing=yes
@@ -309,7 +255,7 @@ add action=drop chain=forward comment=\
 /system clock
 set time-zone-name=Europe/Riga
 /system scheduler
-add comment="LMT-primary dual-WAN scheduler" interval=5s name=\
+add comment="Symmetric dual-WAN scheduler" interval=5s name=\
     DUALWAN-health-every-5s on-event="/system script run DUALWAN-health" \
     policy=read,write,policy,test start-time=startup
 /tool graphing interface
