@@ -421,7 +421,7 @@ function reportLines(snapshot, routerData, routerError) {
     `- Scheduler policy: ${snapshot.scheduler_policy || "?"}`,
     `- DUALWAN-health invalid: ${snapshot.script_invalid || "unknown"}`,
     `- DUALWAN-health runs: ${snapshot.script_runs || "?"}; last started: ${snapshot.script_last_started || "?"}`,
-    `- dwActiveBad: ${snapshot.lmt_bad_cycles || "?"}; last decision: ${snapshot.last_decision || "?"}`,
+    `- dwActiveBad: ${snapshot.active_bad_cycles || "?"}; last decision: ${snapshot.last_decision || "?"}`,
     `- Active script jobs: ${(snapshot.script_jobs || []).join(", ") || "none"}`,
   ];
   if (routerError) {
