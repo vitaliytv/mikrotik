@@ -26,6 +26,22 @@ MIKROTIK_PASS=твій_пароль
   WAN; головного каналу, резерву і автоматичного повернення немає. Обидва DHCP
   default-маршрути існують постійно, тому під час перемикання немає стану без
   маршруту.
+- **RouterOS Netwatch** `WAN-quality-*` — десять monitor-only probes кожні
+  15 хвилин: ICMP до `1.1.1.1` і `8.8.8.8`, TCP connect до `1.1.1.1:443` та
+  DNS resolve `cloudflare.com` через обидва налаштовані upstream resolver —
+  `8.8.8.8` і `8.8.4.4`, окремо через LMT і BITE. Вони
+  записують `sent/received`, packet loss, `min/avg/max RTT`, jitter, stdev,
+  TCP connect time та DNS status/answer у ротацію `wan-quality.*.txt` на диску.
+  Source-specific routing rules
+  `WANQUALITY route lmt|bite` діють лише для адрес самих WAN і не зачіпають
+  forwarding LAN-клієнтів. Scheduler `WAN-quality-sync-every-5m` оновлює ці
+  адреси після DHCP lease change; його source зберігається у
+  `scripts/WAN-quality-sync.rsc`, а DNS probes — у `scripts/WAN-quality-dns.rsc`.
+- **RouterOS interface counters** — script `WAN-quality-interface` і scheduler
+  `WAN-quality-interface-every-1h` пасивно записують `tx-queue-drop`,
+  `link-downs`, FCS/alignment errors і collisions для `ether3` та `ether1`.
+  Source зберігається у `scripts/WAN-quality-interface.rsc`. Поточна ротація
+  20 × 1000 рядків зберігає приблизно 24 дні розширеної історії.
 - **IPv6:** не налаштований. IPv6 DHCPv6-клієнт LMT видалено 2026-07-15,
   оскільки modem не видавав адресу або delegated prefix.
 - **backups/routeros-current.rsc** — санітизований текстовий export RouterOS;
@@ -38,6 +54,9 @@ MIKROTIK_PASS=твій_пароль
     швидкості й не створює трафіку.
   - Панель scheduler — читає стан `DUALWAN-health`, DHCP route priorities,
     probes активного WAN та перемикання напряму з RouterOS.
+  - Панель «Якість» — chunked-читає постійну `wan-quality` історію через
+    `/file/read` і показує RTT/jitter/stdev, packet loss, TCP/DNS checks та
+    зміни фізичних interface counters для LMT і BITE.
   - Панель "Агент" — локальний LLM-агент (omlx) лише з інструментами читання
     стану та логу; він не може змінювати конфігурацію RouterOS.
 

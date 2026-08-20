@@ -5,7 +5,8 @@
 // Usage: wan-cli <tool-name> [json-input]
 
 use wan_monitor_app_lib::{
-    read_router_diagnostic_impl, read_router_log_impl, read_wan_speed_impl, run_wan_speed_test_impl,
+    read_router_diagnostic_impl, read_router_log_impl, read_wan_quality_impl,
+    read_wan_speed_impl, run_wan_speed_test_impl,
 };
 
 fn main() {
@@ -13,6 +14,7 @@ fn main() {
     let tool = args.get(1).map(|s| s.as_str()).unwrap_or("");
     let result: Result<String, String> = match tool {
         "read_wan_speed" => read_wan_speed_impl(),
+        "read_wan_quality" => read_wan_quality_impl(),
         "read_router_log" => read_router_log_impl(),
         "read_router_diagnostic" => read_router_diagnostic_impl(),
         "run_wan_speed_test" => run_wan_speed_test_impl(),
