@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.0] - 2026-08-21
+
+### Added
+
+- Додано планові ICMP, TCP і DNS вимірювання обох upstream resolver та пасивні interface counters для LMT і BITE з chunked disk-історією RouterOS, нормалізацією ICMP loss/timeout і візуалізацією у вкладці «Якість».
+
 ## [0.5.10] - 2026-08-17
 
 ### Changed
