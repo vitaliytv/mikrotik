@@ -568,6 +568,9 @@ fn routeros_duration_ms(value: &str) -> Option<f64> {
     static DURATION: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(\d+(?:\.\d+)?)(ms|us|ns|h|m|s)").expect("valid RouterOS duration regex")
     });
+    if value == "4294967295" {
+        return None;
+    }
     if value.bytes().all(|byte| byte.is_ascii_digit()) {
         let microseconds: f64 = value.parse().ok()?;
         return Some(microseconds / 1_000.0);
@@ -636,14 +639,24 @@ fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
 
     match kind.as_str() {
         "icmp" => {
-            sample.sent = Some(fields.get("sent")?.parse().ok()?);
-            sample.received = Some(fields.get("received")?.parse().ok()?);
-            sample.loss_percent = Some(fields.get("loss")?.parse().ok()?);
-            sample.min_rtt_ms = Some(routeros_duration_ms(fields.get("min")?)?);
-            sample.avg_rtt_ms = Some(routeros_duration_ms(fields.get("avg")?)?);
-            sample.max_rtt_ms = Some(routeros_duration_ms(fields.get("max")?)?);
-            sample.jitter_ms = Some(routeros_duration_ms(fields.get("jitter")?)?);
-            sample.stdev_rtt_ms = fields.get("stdev").and_then(|value| routeros_duration_ms(value));
+            let sent = fields.get("sent")?.parse::<u32>().ok()?;
+            let received = fields.get("received")?.parse::<u32>().ok()?;
+            sample.sent = Some(sent);
+            sample.received = Some(received);
+            sample.loss_percent = (sent > 0).then(|| {
+                f64::from(sent.saturating_sub(received)) * 100.0 / f64::from(sent)
+            });
+            if received > 0 {
+                sample.min_rtt_ms = fields.get("min").and_then(|value| routeros_duration_ms(value));
+                sample.avg_rtt_ms = fields.get("avg").and_then(|value| routeros_duration_ms(value));
+                sample.max_rtt_ms = fields.get("max").and_then(|value| routeros_duration_ms(value));
+                sample.jitter_ms = fields
+                    .get("jitter")
+                    .and_then(|value| routeros_duration_ms(value));
+                sample.stdev_rtt_ms = fields
+                    .get("stdev")
+                    .and_then(|value| routeros_duration_ms(value));
+            }
         }
         "tcp" => {
             sample.tcp_connect_ms = Some(routeros_duration_ms(fields.get("connect")?)?);
@@ -752,6 +765,7 @@ mod disk_history_tests {
         assert_eq!(routeros_duration_ms("26ms506us"), Some(26.506));
         assert_eq!(routeros_duration_ms("26506"), Some(26.506));
         assert_eq!(routeros_duration_ms("1s25ms"), Some(1_025.0));
+        assert_eq!(routeros_duration_ms("4294967295"), None);
         assert_eq!(routeros_duration_ms("invalid"), None);
     }
 
@@ -826,6 +840,27 @@ mod disk_history_tests {
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].dns_server.as_deref(), Some("8.8.4.4"));
         assert_eq!(samples[1].dns_server.as_deref(), Some("8.8.8.8"));
+    }
+
+    #[test]
+    fn normalizes_icmp_loss_and_timeout_sentinel() {
+        let partial = wan_quality_sample(
+            "2026-08-21 12:01:43".to_string(),
+            "WANQUALITY type=icmp wan=lmt target=8.8.8.8 sent=5 received=4 loss=200 min=33721 avg=53895 max=80115 jitter=46394 stdev=17030",
+        )
+        .expect("partial-loss ICMP sample");
+        assert_eq!(partial.loss_percent, Some(20.0));
+        assert_eq!(partial.avg_rtt_ms, Some(53.895));
+
+        let timeout = wan_quality_sample(
+            "2026-08-21 12:01:43".to_string(),
+            "WANQUALITY type=icmp wan=bite target=8.8.8.8 sent=5 received=0 loss=1000 min=4294967295 avg=4294967295 max=4294967295 jitter=4294967295 stdev=4294967295",
+        )
+        .expect("timeout ICMP sample");
+        assert_eq!(timeout.loss_percent, Some(100.0));
+        assert_eq!(timeout.avg_rtt_ms, None);
+        assert_eq!(timeout.jitter_ms, None);
+        assert_eq!(timeout.stdev_rtt_ms, None);
     }
 }
 

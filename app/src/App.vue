@@ -301,10 +301,10 @@ const recentQualityRows = computed(() => qualitySamples.value.filter((sample) =>
   target: sample.target,
   responses: `${sample.received}/${sample.sent}`,
   loss: `${formatQualityNumber(sample.loss_percent)}%`,
-  avg: `${formatQualityNumber(sample.avg_rtt_ms)} ms`,
-  max: `${formatQualityNumber(sample.max_rtt_ms)} ms`,
-  jitter: `${formatQualityNumber(sample.jitter_ms)} ms`,
-  stdev: sample.stdev_rtt_ms == null ? "—" : `${formatQualityNumber(sample.stdev_rtt_ms)} ms`,
+  avg: formatQualityMilliseconds(sample.avg_rtt_ms),
+  max: formatQualityMilliseconds(sample.max_rtt_ms),
+  jitter: formatQualityMilliseconds(sample.jitter_ms),
+  stdev: formatQualityMilliseconds(sample.stdev_rtt_ms),
   status: sample.loss_percent > 0 ? "down" : "up",
 })));
 const recentServiceRows = computed(() => qualitySamples.value
@@ -320,7 +320,7 @@ const recentServiceRows = computed(() => qualitySamples.value
     status: sample.status?.toUpperCase() || "—",
     statusClass: sample.status === "up" ? "up" : "down",
     result: sample.kind === "tcp"
-      ? `${formatQualityNumber(sample.tcp_connect_ms)} ms`
+      ? formatQualityMilliseconds(sample.tcp_connect_ms)
       : sample.dns_answer || "немає відповіді",
   })));
 const interfaceQualityCards = computed(() => [
@@ -714,6 +714,11 @@ function formatQualityNumber(value) {
   return number >= 100 ? number.toFixed(0) : number.toFixed(1);
 }
 
+function formatQualityMilliseconds(value) {
+  const formatted = formatQualityNumber(value);
+  return formatted === "—" ? formatted : `${formatted} ms`;
+}
+
 function qualityCard(wan, title) {
   const wanSamples = qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "icmp");
   const latestTime = wanSamples.at(-1)?.time;
@@ -722,6 +727,10 @@ function qualityCard(wan, title) {
     return { wan, title, status: "unknown", detail1: "Ще немає disk-вимірювань", detail2: "Очікую перший Netwatch cycle" };
   }
   const sum = (field) => latest.reduce((total, sample) => total + Number(sample[field] || 0), 0);
+  const average = (field) => {
+    const values = latest.map((sample) => sample[field]).filter((value) => value != null && Number.isFinite(Number(value)));
+    return values.length ? values.reduce((total, value) => total + Number(value), 0) / values.length : null;
+  };
   const sent = sum("sent");
   const received = sum("received");
   const loss = sent > 0 ? ((sent - received) / sent) * 100 : 100;
@@ -729,7 +738,7 @@ function qualityCard(wan, title) {
     wan,
     title,
     status: loss > 0 ? "down" : "up",
-    detail1: `RTT ${formatQualityNumber(sum("avg_rtt_ms") / latest.length)} ms · jitter ${formatQualityNumber(sum("jitter_ms") / latest.length)} ms`,
+    detail1: `RTT ${formatQualityMilliseconds(average("avg_rtt_ms"))} · jitter ${formatQualityMilliseconds(average("jitter_ms"))}`,
     detail2: `loss ${formatQualityNumber(loss)}% · ${received}/${sent} · ${latestTime}`,
   };
 }
@@ -768,25 +777,33 @@ function qualityBuckets() {
   for (const sample of qualitySamples.value.filter((entry) => entry.kind === "icmp")) {
     const minute = sample.time.slice(0, 16);
     const key = `${minute}|${sample.wan}`;
-    const bucket = buckets.get(key) || { time: minute, wan: sample.wan, count: 0, avg: 0, jitter: 0, stdev: 0, stdevCount: 0, loss: 0 };
-    bucket.count += 1;
-    bucket.avg += sample.avg_rtt_ms;
-    bucket.jitter += sample.jitter_ms;
+    const bucket = buckets.get(key) || { time: minute, wan: sample.wan, avg: 0, avgCount: 0, jitter: 0, jitterCount: 0, stdev: 0, stdevCount: 0, loss: 0, lossCount: 0 };
+    if (sample.avg_rtt_ms != null) {
+      bucket.avg += sample.avg_rtt_ms;
+      bucket.avgCount += 1;
+    }
+    if (sample.jitter_ms != null) {
+      bucket.jitter += sample.jitter_ms;
+      bucket.jitterCount += 1;
+    }
     if (sample.stdev_rtt_ms != null) {
       bucket.stdev += sample.stdev_rtt_ms;
       bucket.stdevCount += 1;
     }
-    bucket.loss += sample.loss_percent;
+    if (sample.loss_percent != null) {
+      bucket.loss += sample.loss_percent;
+      bucket.lossCount += 1;
+    }
     buckets.set(key, bucket);
   }
   return [...buckets.values()]
     .map((bucket) => ({
       time: bucket.time,
       wan: bucket.wan,
-      avg: bucket.avg / bucket.count,
-      jitter: bucket.jitter / bucket.count,
+      avg: bucket.avgCount ? bucket.avg / bucket.avgCount : null,
+      jitter: bucket.jitterCount ? bucket.jitter / bucket.jitterCount : null,
       stdev: bucket.stdevCount ? bucket.stdev / bucket.stdevCount : null,
-      loss: bucket.loss / bucket.count,
+      loss: bucket.lossCount ? bucket.loss / bucket.lossCount : null,
     }))
     .sort((left, right) => left.time.localeCompare(right.time));
 }
@@ -807,7 +824,7 @@ function renderQualityCharts() {
     { label: "BITE avg RTT", data: qualityDataset(labels, buckets, "bite", "avg"), borderColor: "#34d399" },
     { label: "BITE jitter", data: qualityDataset(labels, buckets, "bite", "jitter"), borderColor: "#34d399", borderDash: [5, 4] },
     { label: "BITE stdev", data: qualityDataset(labels, buckets, "bite", "stdev"), borderColor: "#6ee7b7", borderDash: [2, 3] },
-  ].map((dataset) => ({ ...dataset, tension: 0.25, borderWidth: 1.5, spanGaps: true, pointRadius: labels.length > 100 ? 0 : 2 }));
+  ].map((dataset) => ({ ...dataset, tension: 0.25, borderWidth: 1.5, spanGaps: false, pointRadius: labels.length > 100 ? 0 : 2 }));
   qualityLatencyChart?.destroy();
   qualityLatencyChart = new Chart(qualityLatencyCanvasEl.value, {
     type: "line",
