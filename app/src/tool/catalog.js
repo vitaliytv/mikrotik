@@ -26,6 +26,14 @@ export const TOOLS = [
   },
   {
     tier: "read",
+    name: "read_wan_quality",
+    summary:
+      "Read persistent RouterOS disk history of scheduled LMT and BITE ICMP, TCP, DNS, and physical interface quality samples.",
+    input: {},
+    tauri: "read_wan_quality",
+  },
+  {
+    tier: "read",
     name: "run_wan_speed_test",
     summary:
       "Measure LMT and BITE download throughput from the router with equal 50 MB Cloudflare downloads. Requires RouterOS fetch enabled and removes temporary test files.",

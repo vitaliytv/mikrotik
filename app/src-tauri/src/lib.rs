@@ -1,7 +1,9 @@
 mod routeros;
 
 use routeros::{connect_and_login, load_config, read_traffic, ApiRos};
+use regex::Regex;
 use serde::Serialize;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -432,6 +434,39 @@ struct RouterLogResult {
     log_total_lines: usize,
 }
 
+#[derive(Debug, Serialize, PartialEq)]
+struct WanQualitySample {
+    time: String,
+    wan: String,
+    kind: String,
+    target: String,
+    status: Option<String>,
+    sent: Option<u32>,
+    received: Option<u32>,
+    loss_percent: Option<f64>,
+    min_rtt_ms: Option<f64>,
+    avg_rtt_ms: Option<f64>,
+    max_rtt_ms: Option<f64>,
+    jitter_ms: Option<f64>,
+    stdev_rtt_ms: Option<f64>,
+    tcp_connect_ms: Option<f64>,
+    dns_server: Option<String>,
+    dns_answer: Option<String>,
+    interface: Option<String>,
+    running: Option<bool>,
+    tx_queue_drop: Option<u64>,
+    link_downs: Option<u64>,
+    rx_fcs_error: Option<u64>,
+    rx_align_error: Option<u64>,
+    tx_collision: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct WanQualityResult {
+    samples: Vec<WanQualitySample>,
+    history_file_count: usize,
+}
+
 fn controller_state(api: &mut ApiRos) -> String {
     active_wan_state(api)
         .ok()
@@ -463,6 +498,34 @@ fn disk_log_time(time: &str) -> Option<String> {
         .map(|parsed| parsed.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
+fn router_file_contents(api: &mut ApiRos, name: &str, size: usize) -> Result<String, String> {
+    let mut contents = String::with_capacity(size);
+    let mut offset = 0;
+    while offset < size {
+        let chunk_size = (size - offset).min(32_768);
+        let rows = api
+            .talk(&[
+                "/file/read",
+                &format!("=file={name}"),
+                &format!("=offset={offset}"),
+                &format!("=chunk-size={chunk_size}"),
+            ])
+            .map_err(|error| error.to_string())?;
+        let chunk = rows
+            .iter()
+            .find(|(reply, _)| reply == "!re")
+            .and_then(|(_, attrs)| attrs.get("=data"))
+            .cloned()
+            .unwrap_or_default();
+        if chunk.is_empty() {
+            return Err(format!("RouterOS returned an empty chunk for {name} at offset {offset}"));
+        }
+        offset += chunk.len();
+        contents.push_str(&chunk);
+    }
+    Ok(contents)
+}
+
 fn disk_switch_events(api: &mut ApiRos) -> Result<(Vec<SwitchEvent>, usize), String> {
     let rows = api
         .talk(&["/file/print"])
@@ -479,10 +542,8 @@ fn disk_switch_events(api: &mut ApiRos) -> Result<(Vec<SwitchEvent>, usize), Str
             continue;
         }
         file_count += 1;
-        let contents = attrs
-            .get("=contents")
-            .map(String::as_str)
-            .unwrap_or_default();
+        let size = attrs.get("=size").and_then(|value| value.parse().ok()).unwrap_or(0);
+        let contents = router_file_contents(api, name, size)?;
         for line in contents.lines() {
             let Some((logged_at, message)) = line.split_once(" script,warning ") else {
                 continue;
@@ -503,9 +564,183 @@ fn disk_switch_events(api: &mut ApiRos) -> Result<(Vec<SwitchEvent>, usize), Str
     Ok((events, file_count))
 }
 
+fn routeros_duration_ms(value: &str) -> Option<f64> {
+    static DURATION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(\d+(?:\.\d+)?)(ms|us|ns|h|m|s)").expect("valid RouterOS duration regex")
+    });
+    if value == "4294967295" {
+        return None;
+    }
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        let microseconds: f64 = value.parse().ok()?;
+        return Some(microseconds / 1_000.0);
+    }
+    let mut total = 0.0;
+    let mut matched_bytes = 0;
+    for captures in DURATION.captures_iter(value) {
+        let whole = captures.get(0)?;
+        let amount: f64 = captures.get(1)?.as_str().parse().ok()?;
+        let multiplier = match captures.get(2)?.as_str() {
+            "h" => 3_600_000.0,
+            "m" => 60_000.0,
+            "s" => 1_000.0,
+            "ms" => 1.0,
+            "us" => 0.001,
+            "ns" => 0.000_001,
+            _ => return None,
+        };
+        total += amount * multiplier;
+        matched_bytes += whole.as_str().len();
+    }
+    (matched_bytes == value.len() && matched_bytes > 0).then_some(total)
+}
+
+fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
+    let fields: std::collections::HashMap<&str, &str> = message
+        .strip_prefix("WANQUALITY ")?
+        .split_whitespace()
+        .filter_map(|field| field.split_once('='))
+        .collect();
+    let wan = fields.get("wan")?.to_lowercase();
+    if !matches!(wan.as_str(), "lmt" | "bite") {
+        return None;
+    }
+    let kind = fields.get("type").copied().unwrap_or("icmp").to_lowercase();
+    let mut sample = WanQualitySample {
+        time,
+        wan,
+        kind: kind.clone(),
+        target: fields
+            .get("target")
+            .or_else(|| fields.get("interface"))
+            .copied()
+            .unwrap_or_default()
+            .to_string(),
+        status: fields.get("status").map(|value| value.to_lowercase()),
+        sent: None,
+        received: None,
+        loss_percent: None,
+        min_rtt_ms: None,
+        avg_rtt_ms: None,
+        max_rtt_ms: None,
+        jitter_ms: None,
+        stdev_rtt_ms: None,
+        tcp_connect_ms: None,
+        dns_server: fields.get("server").map(|value| value.to_string()),
+        dns_answer: fields.get("answer").map(|value| value.to_string()),
+        interface: fields.get("interface").map(|value| value.to_string()),
+        running: fields.get("running").and_then(|value| value.parse().ok()),
+        tx_queue_drop: fields.get("tx_queue_drop").and_then(|value| value.parse().ok()),
+        link_downs: fields.get("link_downs").and_then(|value| value.parse().ok()),
+        rx_fcs_error: fields.get("rx_fcs_error").and_then(|value| value.parse().ok()),
+        rx_align_error: fields.get("rx_align_error").and_then(|value| value.parse().ok()),
+        tx_collision: fields.get("tx_collision").and_then(|value| value.parse().ok()),
+    };
+
+    match kind.as_str() {
+        "icmp" => {
+            let sent = fields.get("sent")?.parse::<u32>().ok()?;
+            let received = fields.get("received")?.parse::<u32>().ok()?;
+            sample.sent = Some(sent);
+            sample.received = Some(received);
+            sample.loss_percent = (sent > 0).then(|| {
+                f64::from(sent.saturating_sub(received)) * 100.0 / f64::from(sent)
+            });
+            if received > 0 {
+                sample.min_rtt_ms = fields.get("min").and_then(|value| routeros_duration_ms(value));
+                sample.avg_rtt_ms = fields.get("avg").and_then(|value| routeros_duration_ms(value));
+                sample.max_rtt_ms = fields.get("max").and_then(|value| routeros_duration_ms(value));
+                sample.jitter_ms = fields
+                    .get("jitter")
+                    .and_then(|value| routeros_duration_ms(value));
+                sample.stdev_rtt_ms = fields
+                    .get("stdev")
+                    .and_then(|value| routeros_duration_ms(value));
+            }
+        }
+        "tcp" => {
+            sample.tcp_connect_ms = Some(routeros_duration_ms(fields.get("connect")?)?);
+        }
+        "dns" => {}
+        "interface" => {
+            sample.interface.as_ref()?;
+            sample.running?;
+            sample.tx_queue_drop?;
+            sample.link_downs?;
+        }
+        _ => return None,
+    }
+    Some(sample)
+}
+
+fn normalize_wan_quality_samples(samples: &mut Vec<WanQualitySample>) {
+    samples.sort_by(|left, right| {
+        (
+            &left.time,
+            &left.wan,
+            &left.kind,
+            &left.target,
+            &left.dns_server,
+        )
+            .cmp(&(
+                &right.time,
+                &right.wan,
+                &right.kind,
+                &right.target,
+                &right.dns_server,
+            ))
+    });
+    samples.dedup_by(|left, right| {
+        left.time == right.time
+            && left.wan == right.wan
+            && left.kind == right.kind
+            && left.target == right.target
+            && left.dns_server == right.dns_server
+    });
+}
+
+fn disk_wan_quality_samples(api: &mut ApiRos) -> Result<WanQualityResult, String> {
+    let rows = api.talk(&["/file/print"]).map_err(|error| error.to_string())?;
+    let mut samples = Vec::new();
+    let mut history_file_count = 0;
+
+    for (reply, attrs) in rows {
+        if reply != "!re" {
+            continue;
+        }
+        let name = attrs.get("=name").map(String::as_str).unwrap_or_default();
+        if !name.starts_with("wan-quality.") || !name.ends_with(".txt") {
+            continue;
+        }
+        history_file_count += 1;
+        let size = attrs.get("=size").and_then(|value| value.parse().ok()).unwrap_or(0);
+        let contents = router_file_contents(api, name, size)?;
+        for line in contents.lines() {
+            let Some((logged_at, message)) = line.split_once(" script,info ") else {
+                continue;
+            };
+            let Some(time) = disk_log_time(logged_at) else {
+                continue;
+            };
+            if let Some(sample) = wan_quality_sample(time, message) {
+                samples.push(sample);
+            }
+        }
+    }
+
+    normalize_wan_quality_samples(&mut samples);
+    Ok(WanQualityResult {
+        samples,
+        history_file_count,
+    })
+}
+
 #[cfg(test)]
 mod disk_history_tests {
-    use super::{disk_log_time, switch_event};
+    use super::{
+        disk_log_time, normalize_wan_quality_samples, routeros_duration_ms, switch_event,
+        wan_quality_sample,
+    };
 
     #[test]
     fn parses_disk_history_record() {
@@ -524,6 +759,121 @@ mod disk_history_tests {
     fn ignores_non_wan_disk_record() {
         assert!(switch_event("2026-08-17 09:57:13".to_string(), "login failure").is_none());
     }
+
+    #[test]
+    fn parses_routeros_duration_with_submilliseconds() {
+        assert_eq!(routeros_duration_ms("26ms506us"), Some(26.506));
+        assert_eq!(routeros_duration_ms("26506"), Some(26.506));
+        assert_eq!(routeros_duration_ms("1s25ms"), Some(1_025.0));
+        assert_eq!(routeros_duration_ms("4294967295"), None);
+        assert_eq!(routeros_duration_ms("invalid"), None);
+    }
+
+    #[test]
+    fn parses_disk_wan_quality_record() {
+        let sample = wan_quality_sample(
+            "2026-08-18 10:11:52".to_string(),
+            "WANQUALITY wan=lmt target=1.1.1.1 sent=5 received=5 loss=0 min=21ms88us avg=26ms506us max=37ms739us jitter=16ms651us",
+        )
+        .expect("WANQUALITY sample");
+
+        assert_eq!(sample.wan, "lmt");
+        assert_eq!(sample.target, "1.1.1.1");
+        assert_eq!(sample.kind, "icmp");
+        assert_eq!(sample.sent, Some(5));
+        assert_eq!(sample.received, Some(5));
+        assert_eq!(sample.loss_percent, Some(0.0));
+        assert_eq!(sample.avg_rtt_ms, Some(26.506));
+        assert_eq!(sample.jitter_ms, Some(16.651));
+        assert_eq!(sample.stdev_rtt_ms, None);
+    }
+
+    #[test]
+    fn parses_extended_wan_quality_records() {
+        let tcp = wan_quality_sample(
+            "2026-08-18 13:00:00".to_string(),
+            "WANQUALITY type=tcp wan=bite target=1.1.1.1:443 status=up connect=40ms899us",
+        )
+        .expect("TCP sample");
+        assert_eq!(tcp.tcp_connect_ms, Some(40.899));
+        assert_eq!(tcp.status.as_deref(), Some("up"));
+
+        let dns = wan_quality_sample(
+            "2026-08-18 13:00:00".to_string(),
+            "WANQUALITY type=dns wan=lmt target=cloudflare.com server=1.1.1.1 status=up answer=104.16.132.229",
+        )
+        .expect("DNS sample");
+        assert_eq!(dns.dns_server.as_deref(), Some("1.1.1.1"));
+        assert_eq!(dns.dns_answer.as_deref(), Some("104.16.132.229"));
+
+        let interface = wan_quality_sample(
+            "2026-08-18 13:00:00".to_string(),
+            "WANQUALITY type=interface wan=lmt interface=ether3 running=true tx_queue_drop=2696 link_downs=3 rx_fcs_error=0 rx_align_error=0 tx_collision=0",
+        )
+        .expect("interface sample");
+        assert_eq!(interface.running, Some(true));
+        assert_eq!(interface.tx_queue_drop, Some(2696));
+        assert_eq!(interface.link_downs, Some(3));
+    }
+
+    #[test]
+    fn preserves_dns_samples_from_distinct_resolvers() {
+        let primary = wan_quality_sample(
+            "2026-08-20 15:00:00".to_string(),
+            "WANQUALITY type=dns wan=lmt target=cloudflare.com server=8.8.8.8 status=up answer=104.16.132.229",
+        )
+        .expect("primary DNS sample");
+        let secondary = wan_quality_sample(
+            "2026-08-20 15:00:00".to_string(),
+            "WANQUALITY type=dns wan=lmt target=cloudflare.com server=8.8.4.4 status=up answer=104.16.133.229",
+        )
+        .expect("secondary DNS sample");
+        let duplicate = wan_quality_sample(
+            "2026-08-20 15:00:00".to_string(),
+            "WANQUALITY type=dns wan=lmt target=cloudflare.com server=8.8.8.8 status=up answer=104.16.132.229",
+        )
+        .expect("duplicate primary DNS sample");
+        let mut samples = vec![primary, secondary, duplicate];
+
+        normalize_wan_quality_samples(&mut samples);
+
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].dns_server.as_deref(), Some("8.8.4.4"));
+        assert_eq!(samples[1].dns_server.as_deref(), Some("8.8.8.8"));
+    }
+
+    #[test]
+    fn normalizes_icmp_loss_and_timeout_sentinel() {
+        let partial = wan_quality_sample(
+            "2026-08-21 12:01:43".to_string(),
+            "WANQUALITY type=icmp wan=lmt target=8.8.8.8 sent=5 received=4 loss=200 min=33721 avg=53895 max=80115 jitter=46394 stdev=17030",
+        )
+        .expect("partial-loss ICMP sample");
+        assert_eq!(partial.loss_percent, Some(20.0));
+        assert_eq!(partial.avg_rtt_ms, Some(53.895));
+
+        let timeout = wan_quality_sample(
+            "2026-08-21 12:01:43".to_string(),
+            "WANQUALITY type=icmp wan=bite target=8.8.8.8 sent=5 received=0 loss=1000 min=4294967295 avg=4294967295 max=4294967295 jitter=4294967295 stdev=4294967295",
+        )
+        .expect("timeout ICMP sample");
+        assert_eq!(timeout.loss_percent, Some(100.0));
+        assert_eq!(timeout.avg_rtt_ms, None);
+        assert_eq!(timeout.jitter_ms, None);
+        assert_eq!(timeout.stdev_rtt_ms, None);
+    }
+}
+
+/// Читає постійну історію якості обох WAN із `wan-quality.*.txt` на диску RouterOS.
+pub fn read_wan_quality_impl() -> Result<String, String> {
+    let mut api = connect_and_login(Duration::from_secs(5))?;
+    let result = disk_wan_quality_samples(&mut api)?;
+    serde_json::to_string(&result).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn read_wan_quality() -> Result<String, String> {
+    read_wan_quality_impl()
 }
 
 pub fn read_router_log_impl() -> Result<String, String> {
@@ -665,6 +1015,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_wan_speed,
             run_wan_speed_test,
+            read_wan_quality,
             read_router_log,
             read_router_diagnostic
         ])

@@ -3,9 +3,8 @@ type: Rust Module
 title: wan_cli.rs
 resource: app/src-tauri/src/bin/wan_cli.rs
 docgen:
-  crc: 0d1b71d8
+  crc: 39693f95
   model: omlx/gemma-4-26b-a4b-it
-  tier: local-min
   score: 100
   judgeModel: openai-codex/gpt-5.4-mini
 ---

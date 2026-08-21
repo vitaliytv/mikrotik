@@ -3,9 +3,8 @@ type: JS Module
 title: catalog.js
 resource: app/src/tool/catalog.js
 docgen:
-  crc: de2b56db
+  crc: 340c19a6
   model: omlx/gemma-4-26b-a4b-it
-  tier: local-min
   score: 100
   judgeModel: openai-codex/gpt-5.4-mini
 ---

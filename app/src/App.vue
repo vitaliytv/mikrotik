@@ -68,6 +68,59 @@
     <div class="charts"><div class="box"><canvas ref="speedCanvasEl"></canvas></div></div>
   </section>
 
+  <section v-if="activeTab === 'quality'" class="page" aria-label="Якість каналів">
+    <PageGuide title="Якість" purpose="Порівнює LMT і BITE незалежно від active WAN на рівнях ICMP, TCP, DNS та фізичного інтерфейсу." readings="RTT, jitter, stdev і loss описують ICMP; TCP показує connect time, DNS — успішність резолвінгу; counters фіксують drops і link-downs." actions="Оновити перечитує постійну історію без зміни маршрутів або active WAN." when="Використовуйте для пошуку нестабільного каналу та визначення рівня проблеми: маршрут, сервіс або інтерфейс." />
+    <header>
+      <div><h1>Якість WAN за розкладом</h1><div class="controls"><span>{{ qualityStatus }}</span></div></div>
+      <q-btn flat dense round icon="sym_o_refresh" title="Оновити якість" :loading="qualityBusy" @click="loadWanQuality" />
+    </header>
+    <div class="box overview-cards">
+      <div v-for="card in qualityCards" :key="card.wan" :class="['nw-card', card.status]">
+        <div class="title">{{ card.title }}</div>
+        <div class="detail">{{ card.detail1 }}</div>
+        <div class="detail">{{ card.detail2 }}</div>
+      </div>
+    </div>
+    <div class="charts quality-charts">
+      <div class="box"><canvas ref="qualityLatencyCanvasEl"></canvas></div>
+      <div class="box"><canvas ref="qualityLossCanvasEl"></canvas></div>
+    </div>
+    <div class="box">
+      <h2>TCP і DNS checks</h2>
+      <table class="events">
+        <thead><tr><th>Час</th><th>WAN</th><th>Тип</th><th>Target</th><th>Стан</th><th>Результат</th></tr></thead>
+        <tbody>
+          <tr v-for="row in recentServiceRows" :key="row.key" :class="row.statusClass">
+            <td>{{ row.time }}</td><td>{{ row.wan }}</td><td>{{ row.kind }}</td><td>{{ row.target }}</td><td>{{ row.status }}</td><td>{{ row.result }}</td>
+          </tr>
+          <tr v-if="!recentServiceRows.length"><td colspan="6">Очікую перші TCP і DNS checks.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="box">
+      <h2>WAN interface counters</h2>
+      <div class="overview-cards">
+        <div v-for="card in interfaceQualityCards" :key="card.wan" :class="['nw-card', card.status]">
+          <div class="title">{{ card.title }}</div>
+          <div class="detail">{{ card.detail1 }}</div>
+          <div class="detail">{{ card.detail2 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="box">
+      <h2>ICMP history</h2>
+      <table class="events">
+        <thead><tr><th>Час</th><th>WAN</th><th>Target</th><th>Відповіді</th><th>Loss</th><th>Avg RTT</th><th>Max RTT</th><th>Jitter</th><th>Stdev</th></tr></thead>
+        <tbody>
+          <tr v-for="row in recentQualityRows" :key="row.key" :class="row.status">
+            <td>{{ row.time }}</td><td>{{ row.wan }}</td><td>{{ row.target }}</td><td>{{ row.responses }}</td><td>{{ row.loss }}</td><td>{{ row.avg }}</td><td>{{ row.max }}</td><td>{{ row.jitter }}</td><td>{{ row.stdev }}</td>
+          </tr>
+          <tr v-if="!recentQualityRows.length"><td colspan="9">На диску RouterOS ще немає ICMP-вимірювань.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section v-if="activeTab === 'speed-test'" class="page speed-test" aria-label="Тест швидкості WAN">
     <PageGuide title="Тест швидкості" purpose="Порівнює практичну download-швидкість LMT і BITE з самого роутера." readings="Mbps — швидкість завантаження до Cloudflare; тривалість та обсяг пояснюють результат." actions="Тест завантажує по 50 MB через кожен канал, не змінює маршрути та видаляє тимчасові файли." when="Запускайте рідко: для порівняння каналів або перевірки скарги на повільний інтернет." />
     <header>
@@ -191,7 +244,9 @@ const TRAFFIC_AVERAGE_WINDOW = 4; // 4 * 15с = 1 хвилина
 
 const speedCanvasEl = ref(null);
 const wanTimelineCanvasEl = ref(null);
-let wanTimelineChart, speedChart;
+const qualityLatencyCanvasEl = ref(null);
+const qualityLossCanvasEl = ref(null);
+let wanTimelineChart, speedChart, qualityLatencyChart, qualityLossChart;
 
 let liveSamples = []; // Passive interface counters only; history lives in memory while the viewer is open.
 const speedStatus = ref("—");
@@ -201,6 +256,9 @@ const events = ref([]); // switch events: {ts, time, state, reason}
 const rawLogCache = ref([]); // {time, topics, message}
 const rawLogFilter = ref("");
 const rawLogVisible = ref(false);
+const qualitySamples = ref([]);
+const qualityStatus = ref("Очікую історію з диска RouterOS...");
+const qualityBusy = ref(false);
 
 const agent = useAcpAgent();
 const agentOpen = ref(false);
@@ -209,6 +267,7 @@ const activeTab = ref("overview");
 const navigationTabs = [
   { id: "overview", label: "Огляд" },
   { id: "channels", label: "Канали" },
+  { id: "quality", label: "Якість" },
   { id: "speed-test", label: "Тест швидкості" },
   { id: "events", label: "Події" },
   { id: "log", label: "Лог" },
@@ -231,6 +290,43 @@ const rawLogText = computed(() =>
 
 const recentDiagnosticHistory = computed(() => diagnosticHistory.value.slice(0, 5));
 const recentEvents = computed(() => events.value.slice(-300).reverse());
+const qualityCards = computed(() => [
+  qualityCard("lmt", "LMT (WAN1)"),
+  qualityCard("bite", "BITE (WAN2)"),
+]);
+const recentQualityRows = computed(() => qualitySamples.value.filter((sample) => sample.kind === "icmp").slice(-80).reverse().map((sample) => ({
+  key: `${sample.time}-${sample.wan}-${sample.target}`,
+  time: sample.time,
+  wan: sample.wan.toUpperCase(),
+  target: sample.target,
+  responses: `${sample.received}/${sample.sent}`,
+  loss: `${formatQualityNumber(sample.loss_percent)}%`,
+  avg: formatQualityMilliseconds(sample.avg_rtt_ms),
+  max: formatQualityMilliseconds(sample.max_rtt_ms),
+  jitter: formatQualityMilliseconds(sample.jitter_ms),
+  stdev: formatQualityMilliseconds(sample.stdev_rtt_ms),
+  status: sample.loss_percent > 0 ? "down" : "up",
+})));
+const recentServiceRows = computed(() => qualitySamples.value
+  .filter((sample) => ["tcp", "dns"].includes(sample.kind))
+  .slice(-40)
+  .reverse()
+  .map((sample) => ({
+    key: `${sample.time}-${sample.wan}-${sample.kind}-${sample.target}-${sample.dns_server || ""}`,
+    time: sample.time,
+    wan: sample.wan.toUpperCase(),
+    kind: sample.kind.toUpperCase(),
+    target: sample.kind === "dns" ? `${sample.target} @ ${sample.dns_server}` : sample.target,
+    status: sample.status?.toUpperCase() || "—",
+    statusClass: sample.status === "up" ? "up" : "down",
+    result: sample.kind === "tcp"
+      ? formatQualityMilliseconds(sample.tcp_connect_ms)
+      : sample.dns_answer || "немає відповіді",
+  })));
+const interfaceQualityCards = computed(() => [
+  interfaceQualityCard("lmt", "LMT · ether3"),
+  interfaceQualityCard("bite", "BITE · ether1"),
+]);
 
 let refreshTimer = null;
 let diagnosticTimer = null;
@@ -610,6 +706,175 @@ function renderSpeedChart() {
   }
 }
 
+// ---------- постійна історія якості WAN із диска RouterOS ----------
+
+function formatQualityNumber(value) {
+  if (value == null || Number.isNaN(Number(value))) return "—";
+  const number = Number(value);
+  return number >= 100 ? number.toFixed(0) : number.toFixed(1);
+}
+
+function formatQualityMilliseconds(value) {
+  const formatted = formatQualityNumber(value);
+  return formatted === "—" ? formatted : `${formatted} ms`;
+}
+
+function qualityCard(wan, title) {
+  const wanSamples = qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "icmp");
+  const latestTime = wanSamples.at(-1)?.time;
+  const latest = wanSamples.filter((sample) => sample.time === latestTime);
+  if (!latest.length) {
+    return { wan, title, status: "unknown", detail1: "Ще немає disk-вимірювань", detail2: "Очікую перший Netwatch cycle" };
+  }
+  const sum = (field) => latest.reduce((total, sample) => total + Number(sample[field] || 0), 0);
+  const average = (field) => {
+    const values = latest.map((sample) => sample[field]).filter((value) => value != null && Number.isFinite(Number(value)));
+    return values.length ? values.reduce((total, value) => total + Number(value), 0) / values.length : null;
+  };
+  const sent = sum("sent");
+  const received = sum("received");
+  const loss = sent > 0 ? ((sent - received) / sent) * 100 : 100;
+  return {
+    wan,
+    title,
+    status: loss > 0 ? "down" : "up",
+    detail1: `RTT ${formatQualityMilliseconds(average("avg_rtt_ms"))} · jitter ${formatQualityMilliseconds(average("jitter_ms"))}`,
+    detail2: `loss ${formatQualityNumber(loss)}% · ${received}/${sent} · ${latestTime}`,
+  };
+}
+
+function counterDelta(latest, previous, field) {
+  if (!previous || latest[field] == null || previous[field] == null) return 0;
+  return latest[field] >= previous[field] ? latest[field] - previous[field] : latest[field];
+}
+
+function interfaceQualityCard(wan, title) {
+  const samples = qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "interface");
+  const latest = samples.at(-1);
+  const previous = samples.at(-2);
+  if (!latest) {
+    return { wan, title, status: "unknown", detail1: "Ще немає interface counters", detail2: "Очікую hourly sample" };
+  }
+  const queueDelta = counterDelta(latest, previous, "tx_queue_drop");
+  const linkDelta = counterDelta(latest, previous, "link_downs");
+  const l2Errors = Number(latest.rx_fcs_error || 0) + Number(latest.rx_align_error || 0) + Number(latest.tx_collision || 0);
+  const previousL2Errors = previous
+    ? Number(previous.rx_fcs_error || 0) + Number(previous.rx_align_error || 0) + Number(previous.tx_collision || 0)
+    : l2Errors;
+  const l2Delta = l2Errors >= previousL2Errors ? l2Errors - previousL2Errors : l2Errors;
+  const healthy = latest.running && queueDelta === 0 && linkDelta === 0 && l2Delta === 0;
+  return {
+    wan,
+    title,
+    status: healthy ? "up" : "down",
+    detail1: `running ${latest.running ? "yes" : "no"} · queue drops ${latest.tx_queue_drop} (+${queueDelta})`,
+    detail2: `link-downs ${latest.link_downs} (+${linkDelta}) · L2 errors ${l2Errors} (+${l2Delta}) · ${latest.time}`,
+  };
+}
+
+function qualityBuckets() {
+  const buckets = new Map();
+  for (const sample of qualitySamples.value.filter((entry) => entry.kind === "icmp")) {
+    const minute = sample.time.slice(0, 16);
+    const key = `${minute}|${sample.wan}`;
+    const bucket = buckets.get(key) || { time: minute, wan: sample.wan, avg: 0, avgCount: 0, jitter: 0, jitterCount: 0, stdev: 0, stdevCount: 0, loss: 0, lossCount: 0 };
+    if (sample.avg_rtt_ms != null) {
+      bucket.avg += sample.avg_rtt_ms;
+      bucket.avgCount += 1;
+    }
+    if (sample.jitter_ms != null) {
+      bucket.jitter += sample.jitter_ms;
+      bucket.jitterCount += 1;
+    }
+    if (sample.stdev_rtt_ms != null) {
+      bucket.stdev += sample.stdev_rtt_ms;
+      bucket.stdevCount += 1;
+    }
+    if (sample.loss_percent != null) {
+      bucket.loss += sample.loss_percent;
+      bucket.lossCount += 1;
+    }
+    buckets.set(key, bucket);
+  }
+  return [...buckets.values()]
+    .map((bucket) => ({
+      time: bucket.time,
+      wan: bucket.wan,
+      avg: bucket.avgCount ? bucket.avg / bucket.avgCount : null,
+      jitter: bucket.jitterCount ? bucket.jitter / bucket.jitterCount : null,
+      stdev: bucket.stdevCount ? bucket.stdev / bucket.stdevCount : null,
+      loss: bucket.lossCount ? bucket.loss / bucket.lossCount : null,
+    }))
+    .sort((left, right) => left.time.localeCompare(right.time));
+}
+
+function qualityDataset(labels, buckets, wan, field) {
+  const values = new Map(buckets.filter((bucket) => bucket.wan === wan).map((bucket) => [bucket.time, bucket[field]]));
+  return labels.map((label) => values.get(label) ?? null);
+}
+
+function renderQualityCharts() {
+  if (!qualityLatencyCanvasEl.value || !qualityLossCanvasEl.value) return;
+  const buckets = qualityBuckets();
+  const labels = [...new Set(buckets.map((bucket) => bucket.time))];
+  const latencyDatasets = [
+    { label: "LMT avg RTT", data: qualityDataset(labels, buckets, "lmt", "avg"), borderColor: "#60a5fa" },
+    { label: "LMT jitter", data: qualityDataset(labels, buckets, "lmt", "jitter"), borderColor: "#60a5fa", borderDash: [5, 4] },
+    { label: "LMT stdev", data: qualityDataset(labels, buckets, "lmt", "stdev"), borderColor: "#93c5fd", borderDash: [2, 3] },
+    { label: "BITE avg RTT", data: qualityDataset(labels, buckets, "bite", "avg"), borderColor: "#34d399" },
+    { label: "BITE jitter", data: qualityDataset(labels, buckets, "bite", "jitter"), borderColor: "#34d399", borderDash: [5, 4] },
+    { label: "BITE stdev", data: qualityDataset(labels, buckets, "bite", "stdev"), borderColor: "#6ee7b7", borderDash: [2, 3] },
+  ].map((dataset) => ({ ...dataset, tension: 0.25, borderWidth: 1.5, spanGaps: false, pointRadius: labels.length > 100 ? 0 : 2 }));
+  qualityLatencyChart?.destroy();
+  qualityLatencyChart = new Chart(qualityLatencyCanvasEl.value, {
+    type: "line",
+    data: { labels, datasets: latencyDatasets },
+    options: {
+      animation: false,
+      plugins: { title: { display: true, text: "RTT, jitter та stdev, ms", color: "#7dd3fc" }, legend: { labels: { color: "#ccc" } } },
+      scales: {
+        x: { ticks: { color: "#888", maxTicksLimit: 10, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
+        y: { beginAtZero: true, ticks: { color: "#ccc" }, grid: { color: "#2a2a3e" }, title: { display: true, text: "ms", color: "#aaa" } },
+      },
+    },
+  });
+
+  const lossDatasets = [
+    { label: "LMT loss", data: qualityDataset(labels, buckets, "lmt", "loss"), borderColor: "#60a5fa", backgroundColor: "#60a5fa33" },
+    { label: "BITE loss", data: qualityDataset(labels, buckets, "bite", "loss"), borderColor: "#34d399", backgroundColor: "#34d39933" },
+  ].map((dataset) => ({ ...dataset, tension: 0.2, borderWidth: 1.5, fill: true, spanGaps: true, pointRadius: labels.length > 100 ? 0 : 2 }));
+  qualityLossChart?.destroy();
+  qualityLossChart = new Chart(qualityLossCanvasEl.value, {
+    type: "line",
+    data: { labels, datasets: lossDatasets },
+    options: {
+      animation: false,
+      plugins: { title: { display: true, text: "Packet loss, %", color: "#7dd3fc" }, legend: { labels: { color: "#ccc" } } },
+      scales: {
+        x: { ticks: { color: "#888", maxTicksLimit: 10, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
+        y: { beginAtZero: true, suggestedMax: 5, ticks: { color: "#ccc" }, grid: { color: "#2a2a3e" }, title: { display: true, text: "%", color: "#aaa" } },
+      },
+    },
+  });
+}
+
+async function loadWanQuality() {
+  if (qualityBusy.value) return;
+  qualityBusy.value = true;
+  try {
+    const result = JSON.parse(await invoke("read_wan_quality"));
+    qualitySamples.value = result.samples || [];
+    const count = qualitySamples.value.length;
+    const period = count ? `${qualitySamples.value[0].time} — ${qualitySamples.value.at(-1).time}` : "очікую перший запис";
+    qualityStatus.value = `${count} вимірювань · disk-файлів: ${result.history_file_count || 0} · ${period}`;
+    renderQualityCharts();
+  } catch (error) {
+    qualityStatus.value = `Не вдалося прочитати WAN quality: ${error}`;
+  } finally {
+    qualityBusy.value = false;
+  }
+}
+
 // ---------- лог роутера ----------
 
 function parseLogTime(t) {
@@ -750,7 +1015,11 @@ onMounted(() => {
   renderSpeedChart();
   listen("wan-sample", (event) => onWanSample(event.payload));
   loadRouterLog();
-  refreshTimer = setInterval(loadRouterLog, 60000);
+  loadWanQuality();
+  refreshTimer = setInterval(() => {
+    loadRouterLog();
+    loadWanQuality();
+  }, 60000);
   pollDiagnostic();
   if (diagnosticRunning.value) startDiagnostic();
 });
@@ -764,10 +1033,17 @@ watch(activeTab, async (tab, previousTab) => {
     wanTimelineChart.destroy();
     wanTimelineChart = null;
   }
+  if (previousTab === "quality") {
+    qualityLatencyChart?.destroy();
+    qualityLossChart?.destroy();
+    qualityLatencyChart = null;
+    qualityLossChart = null;
+  }
 
   await nextTick();
   if (tab === "channels") renderSpeedChart();
   if (tab === "events") renderWanTimeline();
+  if (tab === "quality") renderQualityCharts();
 });
 
 onUnmounted(() => {
@@ -776,5 +1052,7 @@ onUnmounted(() => {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   speedChart?.destroy();
   wanTimelineChart?.destroy();
+  qualityLatencyChart?.destroy();
+  qualityLossChart?.destroy();
 });
 </script>
