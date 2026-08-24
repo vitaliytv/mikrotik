@@ -459,6 +459,10 @@ struct WanQualitySample {
     rx_fcs_error: Option<u64>,
     rx_align_error: Option<u64>,
     tx_collision: Option<u64>,
+    active: Option<bool>,
+    hard_bad_cycles: Option<u32>,
+    quality_bad_cycles: Option<u32>,
+    last_switch_uptime_ms: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -565,6 +569,9 @@ fn disk_switch_events(api: &mut ApiRos) -> Result<(Vec<SwitchEvent>, usize), Str
 }
 
 fn routeros_duration_ms(value: &str) -> Option<f64> {
+    static CLOCK_DURATION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(\d+):(\d+):(\d+(?:\.\d+)?)$").expect("valid RouterOS clock duration regex")
+    });
     static DURATION: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(\d+(?:\.\d+)?)(ms|us|ns|h|m|s)").expect("valid RouterOS duration regex")
     });
@@ -574,6 +581,12 @@ fn routeros_duration_ms(value: &str) -> Option<f64> {
     if value.bytes().all(|byte| byte.is_ascii_digit()) {
         let microseconds: f64 = value.parse().ok()?;
         return Some(microseconds / 1_000.0);
+    }
+    if let Some(captures) = CLOCK_DURATION.captures(value) {
+        let hours: f64 = captures.get(1)?.as_str().parse().ok()?;
+        let minutes: f64 = captures.get(2)?.as_str().parse().ok()?;
+        let seconds: f64 = captures.get(3)?.as_str().parse().ok()?;
+        return Some((hours * 3_600.0 + minutes * 60.0 + seconds) * 1_000.0);
     }
     let mut total = 0.0;
     let mut matched_bytes = 0;
@@ -635,6 +648,10 @@ fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
         rx_fcs_error: fields.get("rx_fcs_error").and_then(|value| value.parse().ok()),
         rx_align_error: fields.get("rx_align_error").and_then(|value| value.parse().ok()),
         tx_collision: fields.get("tx_collision").and_then(|value| value.parse().ok()),
+        active: None,
+        hard_bad_cycles: None,
+        quality_bad_cycles: None,
+        last_switch_uptime_ms: None,
     };
 
     match kind.as_str() {
@@ -671,6 +688,88 @@ fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
         _ => return None,
     }
     Some(sample)
+}
+
+fn wan_decision_samples(time: String, message: &str) -> Option<Vec<WanQualitySample>> {
+    let fields: std::collections::HashMap<&str, &str> = message
+        .strip_prefix("WANQUALITY type=decision ")?
+        .split_whitespace()
+        .filter_map(|field| field.split_once('='))
+        .collect();
+    let active_wan = fields.get("active")?.to_lowercase();
+    if !matches!(active_wan.as_str(), "lmt" | "bite") {
+        return None;
+    }
+    let hard_bad_cycles = fields.get("hard_bad").and_then(|value| value.parse().ok());
+    let quality_bad_cycles = fields.get("quality_bad").and_then(|value| value.parse().ok());
+    let last_switch_uptime_ms = fields
+        .get("last_switch")
+        .and_then(|value| routeros_duration_ms(value));
+
+    Some(
+        ["lmt", "bite"]
+            .into_iter()
+            .filter_map(|wan| {
+                let sent = fields.get(format!("{wan}_sent").as_str())?.parse::<u32>().ok()?;
+                let received = fields
+                    .get(format!("{wan}_received").as_str())?
+                    .parse::<u32>()
+                    .ok()?;
+                let avg_rtt_ms = fields
+                    .get(format!("{wan}_avg").as_str())
+                    .and_then(|value| routeros_duration_ms(value));
+                let max_rtt_ms = fields
+                    .get(format!("{wan}_max").as_str())
+                    .and_then(|value| routeros_duration_ms(value));
+                let jitter_ms = fields
+                    .get(format!("{wan}_jitter").as_str())
+                    .and_then(|value| routeros_duration_ms(value));
+                let tcp_status = fields
+                    .get(format!("{wan}_tcp_status").as_str())
+                    .map(|value| value.to_lowercase());
+                let tcp_connect_ms = fields
+                    .get(format!("{wan}_tcp").as_str())
+                    .and_then(|value| routeros_duration_ms(value));
+                Some(WanQualitySample {
+                    time: time.clone(),
+                    wan: wan.to_string(),
+                    kind: "decision".to_string(),
+                    target: "1.1.1.1:443".to_string(),
+                    status: tcp_status,
+                    sent: Some(sent),
+                    received: Some(received),
+                    loss_percent: (sent > 0).then(|| {
+                        f64::from(sent.saturating_sub(received)) * 100.0 / f64::from(sent)
+                    }),
+                    min_rtt_ms: None,
+                    avg_rtt_ms,
+                    max_rtt_ms,
+                    jitter_ms,
+                    stdev_rtt_ms: None,
+                    tcp_connect_ms,
+                    dns_server: None,
+                    dns_answer: None,
+                    interface: None,
+                    running: None,
+                    tx_queue_drop: None,
+                    link_downs: None,
+                    rx_fcs_error: None,
+                    rx_align_error: None,
+                    tx_collision: None,
+                    active: Some(active_wan == wan),
+                    hard_bad_cycles,
+                    quality_bad_cycles,
+                    last_switch_uptime_ms,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn wan_quality_samples(time: String, message: &str) -> Vec<WanQualitySample> {
+    wan_decision_samples(time.clone(), message)
+        .or_else(|| wan_quality_sample(time, message).map(|sample| vec![sample]))
+        .unwrap_or_default()
 }
 
 fn normalize_wan_quality_samples(samples: &mut Vec<WanQualitySample>) {
@@ -722,9 +821,7 @@ fn disk_wan_quality_samples(api: &mut ApiRos) -> Result<WanQualityResult, String
             let Some(time) = disk_log_time(logged_at) else {
                 continue;
             };
-            if let Some(sample) = wan_quality_sample(time, message) {
-                samples.push(sample);
-            }
+            samples.extend(wan_quality_samples(time, message));
         }
     }
 
@@ -739,7 +836,7 @@ fn disk_wan_quality_samples(api: &mut ApiRos) -> Result<WanQualityResult, String
 mod disk_history_tests {
     use super::{
         disk_log_time, normalize_wan_quality_samples, routeros_duration_ms, switch_event,
-        wan_quality_sample,
+        wan_decision_samples, wan_quality_sample,
     };
 
     #[test]
@@ -765,6 +862,7 @@ mod disk_history_tests {
         assert_eq!(routeros_duration_ms("26ms506us"), Some(26.506));
         assert_eq!(routeros_duration_ms("26506"), Some(26.506));
         assert_eq!(routeros_duration_ms("1s25ms"), Some(1_025.0));
+        assert_eq!(routeros_duration_ms("00:00:01.025"), Some(1_025.0));
         assert_eq!(routeros_duration_ms("4294967295"), None);
         assert_eq!(routeros_duration_ms("invalid"), None);
     }
@@ -861,6 +959,27 @@ mod disk_history_tests {
         assert_eq!(timeout.avg_rtt_ms, None);
         assert_eq!(timeout.jitter_ms, None);
         assert_eq!(timeout.stdev_rtt_ms, None);
+    }
+
+    #[test]
+    fn expands_combined_decision_record_for_both_wans() {
+        let samples = wan_decision_samples(
+            "2026-08-24 10:20:00".to_string(),
+            "WANQUALITY type=decision active=bite hard_bad=1 quality_bad=2 last_switch=00:05:00 lmt_sent=3 lmt_received=2 lmt_avg=00:00:00.120000 lmt_max=00:00:00.250000 lmt_jitter=00:00:00.180000 lmt_tcp_status=up lmt_tcp=00:00:00.090000 bite_sent=3 bite_received=3 bite_avg=00:00:00.030000 bite_max=00:00:00.040000 bite_jitter=00:00:00.015000 bite_tcp_status=up bite_tcp=00:00:00.035000",
+        )
+        .expect("combined decision record");
+
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].wan, "lmt");
+        assert_eq!(samples[0].active, Some(false));
+        assert_eq!(samples[0].loss_percent, Some(100.0 / 3.0));
+        assert_eq!(samples[0].avg_rtt_ms, Some(120.0));
+        assert_eq!(samples[1].wan, "bite");
+        assert_eq!(samples[1].active, Some(true));
+        assert_eq!(samples[1].tcp_connect_ms, Some(35.0));
+        assert_eq!(samples[1].hard_bad_cycles, Some(1));
+        assert_eq!(samples[1].quality_bad_cycles, Some(2));
+        assert_eq!(samples[1].last_switch_uptime_ms, Some(300_000.0));
     }
 }
 

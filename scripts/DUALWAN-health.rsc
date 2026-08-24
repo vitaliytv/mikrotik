@@ -1,39 +1,103 @@
-# Exactly one RouterOS failover controller. Both WANs use the same health rule.
+# Exactly one RouterOS failover controller. All decisions use source-routed Netwatch results.
 :if ([/system script job print count-only as-value where script=[:jobname]] > 1) do={ :error "DUALWAN-health is already running" }
 
 :global dwActiveBad
 :global dwActiveState
-:if ([:typeof $dwActiveBad] = "nothing") do={ :set dwActiveBad 0 }
+:global dwQualityBad
+:global dwLmtDone
+:global dwBiteDone
+:global dwLastSwitchUptime
+:if ([:typeof $dwActiveBad] != "num") do={ :set dwActiveBad 0 }
+:if ([:typeof $dwQualityBad] != "num") do={ :set dwQualityBad 0 }
+:if ([:typeof $dwLmtDone] != "num") do={ :set dwLmtDone 0 }
+:if ([:typeof $dwBiteDone] != "num") do={ :set dwBiteDone 0 }
+:if ([:typeof $dwLastSwitchUptime] != "time") do={ :set dwLastSwitchUptime 0ms }
 
-# Initialize once after reboot from the installed main-route priority.
-:if ([:typeof $dwActiveState] = "nothing") do={
-  :set dwActiveState "bite"
-  :local lmtTables [/ip dhcp-client get [find where name="client2"] default-route-tables]
-  :if (([:len $lmtTables] >= 6) && ([:pick $lmtTables 0 6] = "main:1")) do={ :set dwActiveState "lmt" }
+# DHCP route priorities are authoritative; globals only preserve streak state.
+:local lmtTables [/ip dhcp-client get [find where name="client2"] default-route-tables]
+:local current "bite"
+:if ([:typeof [:find $lmtTables "main:1"]] != "nil") do={ :set current "lmt" }
+:if (([:typeof $dwActiveState] != "str") || ($dwActiveState != $current)) do={
+  :set dwActiveBad 0
+  :set dwQualityBad 0
+}
+:set dwActiveState $current
+
+:local activeQualityName "DUALWAN-quality-bite-icmp"
+:local activeTcpName "DUALWAN-quality-bite-tcp"
+:local candidateQualityName "DUALWAN-quality-lmt-icmp"
+:local candidateTcpName "DUALWAN-quality-lmt-tcp"
+:local lastActiveDone $dwBiteDone
+:local next "lmt"
+:if ($current = "lmt") do={
+  :set activeQualityName "DUALWAN-quality-lmt-icmp"
+  :set activeTcpName "DUALWAN-quality-lmt-tcp"
+  :set candidateQualityName "DUALWAN-quality-bite-icmp"
+  :set candidateTcpName "DUALWAN-quality-bite-tcp"
+  :set lastActiveDone $dwLmtDone
+  :set next "bite"
 }
 
-:local current $dwActiveState
-:local activeInterface "ether1"
-:if ($current = "lmt") do={ :set activeInterface "ether3" }
-:local edgeReceived [/ping address=212.93.105.242 interface=$activeInterface count=3 interval=200ms]
-:local publicReceived [/ping address=1.1.1.1 interface=$activeInterface count=3 interval=200ms]
-:local activeGood (($edgeReceived >= 2) || ($publicReceived >= 2))
-:local next $current
-:local reason "active-healthy"
+:local activeQualityId [/tool netwatch find where name=$activeQualityName]
+:local activeTcpId [/tool netwatch find where name=$activeTcpName]
+:local candidateQualityId [/tool netwatch find where name=$candidateQualityName]
+:local candidateTcpId [/tool netwatch find where name=$candidateTcpName]
+:if (([:len $activeQualityId] != 1) || ([:len $activeTcpId] != 1) || ([:len $candidateQualityId] != 1) || ([:len $candidateTcpId] != 1)) do={
+  :error "DUALWAN quality probes are missing or duplicated"
+}
 
-:if ($activeGood) do={
-  :set dwActiveBad 0
-} else={
-  :set dwActiveBad ($dwActiveBad + 1)
-  :set reason "active-probes-degraded-keep-current"
-  :if ($dwActiveBad >= 3) do={
-    :if ($current = "lmt") do={ :set next "bite" } else={ :set next "lmt" }
-    :set dwActiveBad 0
-    :set reason "active-probes-degraded-3x-switch-next"
+:local activeDone [/tool netwatch get $activeQualityId done-tests]
+:local activeReceived [/tool netwatch get $activeQualityId response-count]
+:local activeAvg [/tool netwatch get $activeQualityId rtt-avg]
+:local activeMax [/tool netwatch get $activeQualityId rtt-max]
+:local activeJitter [/tool netwatch get $activeQualityId rtt-jitter]
+:local activeTcpStatus [/tool netwatch get $activeTcpId status]
+:local activeTcp [/tool netwatch get $activeTcpId tcp-connect-time]
+:local candidateReceived [/tool netwatch get $candidateQualityId response-count]
+:local candidateAvg [/tool netwatch get $candidateQualityId rtt-avg]
+:local candidateMax [/tool netwatch get $candidateQualityId rtt-max]
+:local candidateJitter [/tool netwatch get $candidateQualityId rtt-jitter]
+:local candidateTcpStatus [/tool netwatch get $candidateTcpId status]
+:local candidateTcp [/tool netwatch get $candidateTcpId tcp-connect-time]
+
+:local metricsReady (([:typeof $activeAvg] = "time") && ([:typeof $activeMax] = "time") && ([:typeof $activeJitter] = "time") && ([:typeof $activeTcp] = "time") && ([:typeof $candidateAvg] = "time") && ([:typeof $candidateMax] = "time") && ([:typeof $candidateJitter] = "time") && ([:typeof $candidateTcp] = "time"))
+:local activeHardBad (($activeReceived < 2) && ($activeTcpStatus != "up"))
+:local candidateAvailable (($candidateReceived >= 2) || ($candidateTcpStatus = "up"))
+:local activeQualityBad false
+:local candidateQualityGood false
+:local candidateBetter false
+:if ($metricsReady) do={
+  :set activeQualityBad (($activeReceived < 3) || ($activeTcpStatus != "up") || ($activeAvg > 80ms) || ($activeMax > 180ms) || ($activeJitter > 120ms) || ($activeTcp > 300ms))
+  :set candidateQualityGood (($candidateReceived >= 3) && ($candidateTcpStatus = "up") && ($candidateAvg <= 80ms) && ($candidateMax <= 160ms) && ($candidateJitter <= 100ms) && ($candidateTcp <= 250ms))
+  :set candidateBetter (($candidateAvg + 20ms) < $activeAvg)
+}
+
+# A streak advances only on a fresh source-routed ICMP sample from the active WAN.
+:if (($activeDone != $lastActiveDone) && $metricsReady) do={
+  :if ($current = "lmt") do={ :set dwLmtDone $activeDone } else={ :set dwBiteDone $activeDone }
+  :if ($activeHardBad) do={ :set dwActiveBad ($dwActiveBad + 1) } else={ :set dwActiveBad 0 }
+  :if ($activeQualityBad && $candidateQualityGood && $candidateBetter) do={
+    :set dwQualityBad ($dwQualityBad + 1)
+  } else={
+    :set dwQualityBad 0
   }
 }
 
-:if ($next != $current) do={
+:local nowUptime [/system resource get uptime]
+:local qualityHoldExpired (($nowUptime - $dwLastSwitchUptime) >= 5m)
+:local shouldSwitch false
+:local reason "active-healthy"
+:if (($dwActiveBad >= 3) && $candidateAvailable) do={
+  :set shouldSwitch true
+  :set reason "active-source-probes-down-3x-candidate-up"
+} else={
+  :if (($dwQualityBad >= 3) && $qualityHoldExpired) do={
+    :set shouldSwitch true
+    :set reason "active-quality-degraded-3x-candidate-better"
+  }
+}
+
+:if ($shouldSwitch) do={
   :if ($next = "bite") do={
     /ip dhcp-client set [find where name="client1"] default-route-tables="main:1,to_WAN1:1,to_WAN2:1"
     :delay 1s
@@ -44,5 +108,8 @@
     /ip dhcp-client set [find where name="client1"] default-route-tables="main:2,to_WAN1:2,to_WAN2:1"
   }
   :set dwActiveState $next
-  :log warning ("DUALWAN state=" . $next . " from=" . $current . " reason=" . $reason . " interface=" . $activeInterface . " edge-received=" . $edgeReceived . "/3 public-received=" . $publicReceived . "/3")
+  :set dwActiveBad 0
+  :set dwQualityBad 0
+  :set dwLastSwitchUptime $nowUptime
+  :log warning ("DUALWAN state=" . $next . " from=" . $current . " reason=" . $reason . " active-icmp=" . $activeReceived . "/3 active-avg=" . $activeAvg . " active-max=" . $activeMax . " active-jitter=" . $activeJitter . " active-tcp=" . $activeTcpStatus . "/" . $activeTcp . " candidate-icmp=" . $candidateReceived . "/3 candidate-avg=" . $candidateAvg . " candidate-tcp=" . $candidateTcpStatus . "/" . $candidateTcp)
 }
