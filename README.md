@@ -28,7 +28,9 @@ MIKROTIK_PASS=твій_пароль
   5 хвилин; hard outage обходить hold-down. Головного каналу, резерву й
   автоматичного повернення немає. Контролер не використовує `ping interface=`,
   який давав хибні failures на RouterOS. Обидва DHCP default-маршрути існують
-  постійно, тому під час перемикання немає стану без маршруту. Sources
+  постійно, тому під час перемикання немає стану без маршруту. Policy tables
+  закріплені незалежно від active WAN: `to_WAN1` завжди веде через LMT,
+  `to_WAN2` — через BITE; контролер змінює лише priority у `main`. Sources
   контролера та probes зберігаються у `scripts/DUALWAN-health.rsc` і
   `scripts/DUALWAN-quality-probes.rsc`. Script `DUALWAN-quality-log` раз на
   хвилину записує один combined snapshot обох WAN з active WAN, streaks,
