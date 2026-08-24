@@ -86,6 +86,18 @@
       <div class="box"><canvas ref="qualityLossCanvasEl"></canvas></div>
     </div>
     <div class="box">
+      <h2>Decision metrics контролера</h2>
+      <table class="events">
+        <thead><tr><th>Час</th><th>WAN</th><th>Роль</th><th>Відповіді</th><th>Avg / Max RTT</th><th>Jitter</th><th>TCP</th><th>Streak hard / quality</th></tr></thead>
+        <tbody>
+          <tr v-for="row in recentDecisionRows" :key="row.key" :class="row.statusClass">
+            <td>{{ row.time }}</td><td>{{ row.wan }}</td><td>{{ row.role }}</td><td>{{ row.responses }}</td><td>{{ row.rtt }}</td><td>{{ row.jitter }}</td><td>{{ row.tcp }}</td><td>{{ row.streak }}</td>
+          </tr>
+          <tr v-if="!recentDecisionRows.length"><td colspan="8">Очікую перший хвилинний snapshot контролера.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="box">
       <h2>TCP і DNS checks</h2>
       <table class="events">
         <thead><tr><th>Час</th><th>WAN</th><th>Тип</th><th>Target</th><th>Стан</th><th>Результат</th></tr></thead>
@@ -323,6 +335,30 @@ const recentServiceRows = computed(() => qualitySamples.value
       ? formatQualityMilliseconds(sample.tcp_connect_ms)
       : sample.dns_answer || "немає відповіді",
   })));
+const recentDecisionRows = computed(() => qualitySamples.value
+  .filter((sample) => sample.kind === "decision")
+  .slice(-40)
+  .reverse()
+  .map((sample) => {
+    const degraded = sample.loss_percent > 0
+      || sample.status !== "up"
+      || Number(sample.avg_rtt_ms) > 80
+      || Number(sample.max_rtt_ms) > 180
+      || Number(sample.jitter_ms) > 120
+      || Number(sample.tcp_connect_ms) > 300;
+    return {
+      key: `${sample.time}-${sample.wan}-decision`,
+      time: sample.time,
+      wan: sample.wan.toUpperCase(),
+      role: sample.active ? "ACTIVE" : "candidate",
+      responses: `${sample.received}/${sample.sent} · loss ${formatQualityNumber(sample.loss_percent)}%`,
+      rtt: `${formatQualityMilliseconds(sample.avg_rtt_ms)} / ${formatQualityMilliseconds(sample.max_rtt_ms)}`,
+      jitter: formatQualityMilliseconds(sample.jitter_ms),
+      tcp: `${sample.status?.toUpperCase() || "—"} · ${formatQualityMilliseconds(sample.tcp_connect_ms)}`,
+      streak: sample.active ? `${sample.hard_bad_cycles ?? 0} / ${sample.quality_bad_cycles ?? 0}` : "—",
+      statusClass: degraded ? "down" : "up",
+    };
+  }));
 const interfaceQualityCards = computed(() => [
   interfaceQualityCard("lmt", "LMT · ether3"),
   interfaceQualityCard("bite", "BITE · ether1"),
@@ -720,7 +756,10 @@ function formatQualityMilliseconds(value) {
 }
 
 function qualityCard(wan, title) {
-  const wanSamples = qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "icmp");
+  const decisionSamples = qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "decision");
+  const wanSamples = decisionSamples.length
+    ? decisionSamples
+    : qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "icmp");
   const latestTime = wanSamples.at(-1)?.time;
   const latest = wanSamples.filter((sample) => sample.time === latestTime);
   if (!latest.length) {
@@ -739,7 +778,7 @@ function qualityCard(wan, title) {
     title,
     status: loss > 0 ? "down" : "up",
     detail1: `RTT ${formatQualityMilliseconds(average("avg_rtt_ms"))} · jitter ${formatQualityMilliseconds(average("jitter_ms"))}`,
-    detail2: `loss ${formatQualityNumber(loss)}% · ${received}/${sent} · ${latestTime}`,
+    detail2: `loss ${formatQualityNumber(loss)}% · ${received}/${sent}${latest[0]?.active == null ? "" : latest[0].active ? " · ACTIVE" : " · candidate"} · ${latestTime}`,
   };
 }
 
@@ -774,7 +813,9 @@ function interfaceQualityCard(wan, title) {
 
 function qualityBuckets() {
   const buckets = new Map();
-  for (const sample of qualitySamples.value.filter((entry) => entry.kind === "icmp")) {
+  const decisions = qualitySamples.value.filter((entry) => entry.kind === "decision");
+  const chartSamples = decisions.length ? decisions : qualitySamples.value.filter((entry) => entry.kind === "icmp");
+  for (const sample of chartSamples) {
     const minute = sample.time.slice(0, 16);
     const key = `${minute}|${sample.wan}`;
     const bucket = buckets.get(key) || { time: minute, wan: sample.wan, avg: 0, avgCount: 0, jitter: 0, jitterCount: 0, stdev: 0, stdevCount: 0, loss: 0, lossCount: 0 };

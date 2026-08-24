@@ -19,13 +19,21 @@ MIKROTIK_PASS=твій_пароль
 ## Архітектура
 
 - **RouterOS scheduler** `DUALWAN-health-every-5s` — симетричний контролер
-  failover. Кожні 5 с він тестує лише поточний WAN через його інтерфейс
-  (`ether3` для LMT, `ether1` для BITE) до `212.93.105.242` та `1.1.1.1`.
-  Канал нормальний, якщо хоча б один target відповідає щонайменше на 2 з 3
-  ping. Після трьох поганих циклів поспіль контролер перемикається на інший
-  WAN; головного каналу, резерву і автоматичного повернення немає. Обидва DHCP
-  default-маршрути існують постійно, тому під час перемикання немає стану без
-  маршруту.
+  failover. Silent source-routed Netwatch probes
+  `DUALWAN-quality-*-icmp|tcp` кожні 5 с вимірюють обидва WAN до `1.1.1.1`.
+  Binary outage визначається одночасною відсутністю ICMP і TCP активного WAN;
+  перемикання виконується після трьох нових поганих samples, лише якщо
+  candidate відповідає. Quality-перемикання також вимагає три нові degraded
+  samples, здоровий candidate щонайменше на 20 ms кращий і має hold-down
+  5 хвилин; hard outage обходить hold-down. Головного каналу, резерву й
+  автоматичного повернення немає. Контролер не використовує `ping interface=`,
+  який давав хибні failures на RouterOS. Обидва DHCP default-маршрути існують
+  постійно, тому під час перемикання немає стану без маршруту. Sources
+  контролера та probes зберігаються у `scripts/DUALWAN-health.rsc` і
+  `scripts/DUALWAN-quality-probes.rsc`. Script `DUALWAN-quality-log` раз на
+  хвилину записує один combined snapshot обох WAN з active WAN, streaks,
+  ICMP RTT/loss/jitter і TCP connect time у `wan-quality` disk history;
+  його source зберігається у `scripts/DUALWAN-quality-log.rsc`.
 - **RouterOS Netwatch** `WAN-quality-*` — десять monitor-only probes кожні
   15 хвилин: ICMP до `1.1.1.1` і `8.8.8.8`, TCP connect до `1.1.1.1:443` та
   DNS resolve `cloudflare.com` через обидва налаштовані upstream resolver —
@@ -35,7 +43,7 @@ MIKROTIK_PASS=твій_пароль
   Source-specific routing rules
   `WANQUALITY route lmt|bite` діють лише для адрес самих WAN і не зачіпають
   forwarding LAN-клієнтів. Scheduler `WAN-quality-sync-every-5m` оновлює ці
-  адреси після DHCP lease change; його source зберігається у
+  адреси monitor-only і decision probes після DHCP lease change; його source зберігається у
   `scripts/WAN-quality-sync.rsc`, а DNS probes — у `scripts/WAN-quality-dns.rsc`.
 - **RouterOS interface counters** — script `WAN-quality-interface` і scheduler
   `WAN-quality-interface-every-1h` пасивно записують `tx-queue-drop`,

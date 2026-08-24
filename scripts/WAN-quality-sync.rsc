@@ -21,6 +21,12 @@
   :local probeIds [/tool netwatch find where comment=$probeComment]
   :if ([:len $probeIds] != 5) do={ :error ("WANQUALITY sync expected five probes wan=" . $wan) }
   /tool netwatch set $probeIds src-address=$address
+
+  :local decisionIcmp [/tool netwatch find where name=("DUALWAN-quality-" . $wan . "-icmp")]
+  :local decisionTcp [/tool netwatch find where name=("DUALWAN-quality-" . $wan . "-tcp")]
+  :if (([:len $decisionIcmp] != 1) || ([:len $decisionTcp] != 1)) do={ :error ("DUALWAN sync expected two decision probes wan=" . $wan) }
+  /tool netwatch set $decisionIcmp src-address=$address
+  /tool netwatch set $decisionTcp src-address=$address
 }
 
 $syncWan "lmt" "client2" "to_WAN1"

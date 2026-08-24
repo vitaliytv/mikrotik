@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Encrypted RouterOS binary backups stay local; sanitized text exports are tracked.
+backups/private/
+
 # Claude Code agent worktrees (isolated working copies)
 .claude/worktrees/
 
