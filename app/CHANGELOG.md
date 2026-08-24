@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.1] - 2026-08-24
+
+### Fixed
+
+- Додано синхронні хвилинні decision metrics обох WAN у дискову історію та MyMikroTik; failover переведено на source-routed ICMP/TCP probes без хибного ping interface.
+
 ## [0.6.0] - 2026-08-21
 
 ### Added
