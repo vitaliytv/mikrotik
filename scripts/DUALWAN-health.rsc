@@ -99,13 +99,14 @@
 
 :if ($shouldSwitch) do={
   :if ($next = "bite") do={
-    /ip dhcp-client set [find where name="client1"] default-route-tables="main:1,to_WAN1:1,to_WAN2:1"
+    # Policy tables stay pinned: to_WAN1=LMT, to_WAN2=BITE. Only main changes priority.
+    /ip dhcp-client set [find where name="client1"] default-route-tables="main:1,to_WAN2:1"
     :delay 1s
-    /ip dhcp-client set [find where name="client2"] default-route-tables="main:2,to_WAN1:2,to_WAN2:2"
+    /ip dhcp-client set [find where name="client2"] default-route-tables="main:2,to_WAN1:1"
   } else={
-    /ip dhcp-client set [find where name="client2"] default-route-tables="main:1,to_WAN1:1,to_WAN2:2"
+    /ip dhcp-client set [find where name="client2"] default-route-tables="main:1,to_WAN1:1"
     :delay 1s
-    /ip dhcp-client set [find where name="client1"] default-route-tables="main:2,to_WAN1:2,to_WAN2:1"
+    /ip dhcp-client set [find where name="client1"] default-route-tables="main:2,to_WAN2:1"
   }
   :set dwActiveState $next
   :set dwActiveBad 0
