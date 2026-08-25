@@ -14,7 +14,7 @@
   </nav>
 
   <section v-if="activeTab === 'overview'" class="page" aria-label="Огляд">
-    <PageGuide title="Огляд" purpose="Швидко показує, чи доступний роутер і який WAN зараз обслуговує мережу." readings="LMT — основний канал, BITE — резервний. API latency — час відповіді RouterOS." actions="Кнопка оновлення повторює read-only перевірку; вона не змінює конфігурацію." when="Відкривайте першою, коли інтернет працює не так, як очікується." />
+    <PageGuide title="Огляд" purpose="Швидко показує, чи доступний роутер і який WAN зараз обслуговує мережу." readings="LMT і BITE — рівноправні канали quality-aware controller; API latency — час відповіді RouterOS." actions="Кнопка оновлення повторює read-only перевірку; вона не змінює конфігурацію." when="Відкривайте першою, коли інтернет працює не так, як очікується." />
     <header>
       <div>
         <h1>Стан мережі</h1>
@@ -159,9 +159,37 @@
     <div v-if="wanSpeedTestError" class="diagnostic-error">{{ wanSpeedTestError }}</div>
   </section>
 
-  <section v-if="activeTab === 'events'" class="page" aria-label="Події">
-    <PageGuide title="Події" purpose="Пояснює, коли змінювався активний WAN і чи працює failover controller." readings="Timeline і таблиця будуються тільки з постійного `dualwan-history` на диску RouterOS; останній відрізок продовжується поточним станом." actions="Оновлення читає диск і актуальні RouterOS дані без зміни конфігурації. Звіт збирає read-only дані для передачі в чат." when="Відкривайте після перемикання каналу або коли потрібно розібрати причину проблеми." />
-    <header><h1>Стан dual-WAN scheduler</h1><div class="controls"><span>{{ routerStatus }}</span><q-btn flat dense round icon="sym_o_refresh" title="Оновити події" @click="loadRouterLog" /><q-btn dense outline icon="sym_o_summarize" label="Зібрати звіт" :loading="reportBusy" @click="captureDiagnosticReport()" /></div></header>
+  <section v-if="activeTab === 'events'" class="page" aria-label="Перемикання">
+    <PageGuide title="Перемикання" purpose="Показує на надійній часовій шкалі, коли змінювався active WAN і скільки часу працював кожен канал." readings="Timeline, тривалість і таблиця будуються з постійного `dualwan-history` на диску RouterOS; історія до виправлення source-routed probes не враховується." actions="Оновлення читає диск і актуальні RouterOS дані без зміни конфігурації. Діапазон перемикає відображення між 24 годинами та 7 днями." when="Відкривайте після перемикання каналу або коли потрібно звірити час роботи LMT і BITE." />
+    <header>
+      <div>
+        <h1>Історія перемикань active WAN</h1>
+        <div class="controls"><span>{{ routerStatus }}</span></div>
+      </div>
+      <div class="switch-actions">
+        <q-btn v-for="option in eventRangeOptions" :key="option.hours" dense no-caps color="primary" :outline="eventRangeHours !== option.hours" :label="option.label" @click="setEventRange(option.hours)" />
+        <q-btn flat dense round icon="sym_o_refresh" title="Оновити перемикання" @click="loadRouterLog" />
+        <q-btn dense outline icon="sym_o_summarize" label="Зібрати звіт" :loading="reportBusy" @click="captureDiagnosticReport()" />
+      </div>
+    </header>
+    <div class="box switch-summary">
+      <div class="switch-summary-card lmt">
+        <span>LMT</span>
+        <strong>{{ switchTimelineSummary.lmtDuration }}</strong>
+        <small>{{ switchTimelineSummary.lmtPercent }}</small>
+      </div>
+      <div class="switch-summary-card bite">
+        <span>BITE</span>
+        <strong>{{ switchTimelineSummary.biteDuration }}</strong>
+        <small>{{ switchTimelineSummary.bitePercent }}</small>
+      </div>
+      <div class="switch-summary-card neutral">
+        <span>Перемикання</span>
+        <strong>{{ switchTimelineSummary.switchCount }}</strong>
+        <small>{{ switchTimelineSummary.period }}</small>
+      </div>
+    </div>
+    <p class="switch-history-note">Надійна історія починається {{ reliableHistoryStartLabel }} — після встановлення окремих source-routed probes для обох WAN.</p>
     <div class="charts">
       <div class="box"><canvas ref="wanTimelineCanvasEl"></canvas></div>
       <div class="box">
@@ -181,11 +209,12 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(ev, i) in recentEvents" :key="i" :class="ev.state === 'bite' ? 'down' : 'up'">
+          <tr v-for="ev in recentEvents" :key="ev.key" :class="ev.state === 'bite' ? 'down' : 'up'">
             <td>{{ ev.time }}</td>
             <td>{{ ev.state === "bite" ? "BITE" : "LMT" }}</td>
             <td>{{ ev.reason || "—" }}</td>
           </tr>
+          <tr v-if="!recentEvents.length"><td colspan="3">У вибраному періоді перемикань не було.</td></tr>
         </tbody>
       </table>
       </div>
@@ -197,7 +226,7 @@
   </section>
 
   <section v-if="activeTab === 'log'" class="page" aria-label="Лог">
-    <PageGuide title="Лог" purpose="Дає повні RouterOS записи для глибокої діагностики." readings="Кожен рядок містить час, тему та текст RouterOS. Фільтр звужує список лише у вікні." actions="Оновити запитує останні записи з роутера; показати/сховати керує лише їх відображенням." when="Відкривайте, якщо `Огляд` або `Події` не пояснили проблему." />
+    <PageGuide title="Лог" purpose="Дає повні RouterOS записи для глибокої діагностики." readings="Кожен рядок містить час, тему та текст RouterOS. Фільтр звужує список лише у вікні." actions="Оновити запитує останні записи з роутера; показати/сховати керує лише їх відображенням." when="Відкривайте, якщо `Огляд` або `Перемикання` не пояснили проблему." />
     <div class="box raw-log">
     <div class="raw-log-toolbar">
       <span>Сирий лог MikroTik (останні <span>{{ filteredRawLog.length }}</span> рядків)</span>
@@ -281,7 +310,7 @@ const navigationTabs = [
   { id: "channels", label: "Канали" },
   { id: "quality", label: "Якість" },
   { id: "speed-test", label: "Тест швидкості" },
-  { id: "events", label: "Події" },
+  { id: "events", label: "Перемикання" },
   { id: "log", label: "Лог" },
 ];
 
@@ -301,7 +330,24 @@ const rawLogText = computed(() =>
 );
 
 const recentDiagnosticHistory = computed(() => diagnosticHistory.value.slice(0, 5));
-const recentEvents = computed(() => events.value.slice(-300).reverse());
+const RELIABLE_SWITCH_HISTORY_START = new Date(2026, 7, 24, 16, 10, 27);
+const RELIABLE_SWITCH_INITIAL_STATE = "bite";
+const eventRangeOptions = [
+  { hours: 24, label: "24 години" },
+  { hours: 168, label: "7 днів" },
+];
+const eventRangeHours = ref(24);
+const timelineNow = ref(new Date());
+const currentWanState = ref("");
+const reliableHistoryStartLabel = RELIABLE_SWITCH_HISTORY_START.toLocaleString("sv-SE");
+const eventRangeStart = computed(() => {
+  const selectedStart = new Date(timelineNow.value.getTime() - eventRangeHours.value * 60 * 60 * 1000);
+  return selectedStart > RELIABLE_SWITCH_HISTORY_START ? selectedStart : RELIABLE_SWITCH_HISTORY_START;
+});
+const filteredEvents = computed(() => timelinePoints()
+  .filter((point) => point.source === "disk")
+  .map((point) => ({ ...point, key: `${point.time}-${point.state}-${point.reason || ""}` })));
+const recentEvents = computed(() => filteredEvents.value.slice(-300).reverse());
 const qualityCards = computed(() => [
   qualityCard("lmt", "LMT (WAN1)"),
   qualityCard("bite", "BITE (WAN2)"),
@@ -930,40 +976,84 @@ function parseLogTime(t) {
   return new Date(t);
 }
 
+function formatWanDuration(milliseconds) {
+  const totalMinutes = Math.max(0, Math.round(milliseconds / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${minutes} хв`;
+  return minutes ? `${hours} год ${minutes} хв` : `${hours} год`;
+}
+
+function timelineDateLabel(value, includeDate = false) {
+  const date = new Date(value);
+  const time = date.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
+  if (!includeDate) return time;
+  return `${date.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" })} ${time}`;
+}
+
 function timelinePoints() {
+  const rangeStart = eventRangeStart.value;
+  const rangeEnd = timelineNow.value;
   const points = events.value
     .filter((event) => !Number.isNaN(event.ts?.getTime()))
-    .map((event) => ({ ts: event.ts.toISOString(), state: event.state, source: "disk" }))
+    .map((event) => ({ ...event, source: "disk" }))
     .filter((point) => ["lmt", "bite"].includes(point.state))
-    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+    .filter((point) => point.ts >= RELIABLE_SWITCH_HISTORY_START && point.ts <= rangeEnd)
+    .sort((a, b) => a.ts - b.ts);
 
-  const result = [];
-  for (const point of points) {
+  let stateAtStart = RELIABLE_SWITCH_INITIAL_STATE;
+  for (const point of points.filter((point) => point.ts <= rangeStart)) stateAtStart = point.state;
+
+  const result = [{ ts: rangeStart, state: stateAtStart, source: "range-start" }];
+  for (const point of points.filter((point) => point.ts > rangeStart)) {
     const previous = result.at(-1);
     if (previous?.state === point.state) continue;
     result.push(point);
   }
-  const current = diagnosticSnapshot.value?.controller_state?.toLowerCase();
-  if (["lmt", "bite"].includes(current) && result.at(-1)?.state === current) {
-    result.push({ ts: new Date().toISOString(), state: current, source: "current" });
-  }
+  const current = currentWanState.value || result.at(-1)?.state;
+  if (["lmt", "bite"].includes(current) && result.at(-1)?.state !== current) result.push({ ts: rangeEnd, state: current, source: "current" });
+  else result.push({ ts: rangeEnd, state: result.at(-1)?.state || current, source: "current" });
   return result;
+}
+
+const switchTimelineSummary = computed(() => {
+  const totals = { lmt: 0, bite: 0 };
+  const points = timelinePoints();
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const duration = points[index + 1].ts - points[index].ts;
+    if (duration > 0 && Object.hasOwn(totals, points[index].state)) totals[points[index].state] += duration;
+  }
+  const total = totals.lmt + totals.bite;
+  const percentage = (value) => total ? `${(value / total * 100).toFixed(1)}% періоду` : "0% періоду";
+  return {
+    lmtDuration: formatWanDuration(totals.lmt),
+    biteDuration: formatWanDuration(totals.bite),
+    lmtPercent: percentage(totals.lmt),
+    bitePercent: percentage(totals.bite),
+    switchCount: filteredEvents.value.length,
+    period: `від ${eventRangeStart.value.toLocaleString("sv-SE")}`,
+  };
+});
+
+function setEventRange(hours) {
+  eventRangeHours.value = hours;
+  timelineNow.value = new Date();
+  renderWanTimeline();
 }
 
 function renderWanTimeline() {
   if (!wanTimelineCanvasEl.value) return;
   const points = timelinePoints();
-  const labels = points.map((point) => fmtClock(new Date(point.ts)));
-  const values = points.map((point) => point.state === "lmt" ? 1 : 0);
+  const chartPoints = points.map((point) => ({ x: point.ts.getTime(), y: point.state === "lmt" ? 1 : 0 }));
   const colors = points.map((point) => point.state === "lmt" ? "#60a5fa" : "#34d399");
   if (wanTimelineChart) wanTimelineChart.destroy();
   wanTimelineChart = new Chart(wanTimelineCanvasEl.value, {
     type: "line",
     data: {
-      labels,
       datasets: [{
         label: "Активний WAN",
-        data: values,
+        data: chartPoints,
+        parsing: false,
         borderColor: "#94a3b8",
         backgroundColor: "rgba(96, 165, 250, .14)",
         stepped: "before",
@@ -981,13 +1071,24 @@ function renderWanTimeline() {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (context) => `${context.raw === 1 ? "LMT" : "BITE"} активний`,
-            afterLabel: (context) => points[context.dataIndex] ? new Date(points[context.dataIndex].ts).toLocaleString("sv-SE") : "",
+            title: (items) => items[0] ? new Date(items[0].raw.x).toLocaleString("sv-SE") : "",
+            label: (context) => `${context.raw.y === 1 ? "LMT" : "BITE"} активний`,
           },
         },
       },
       scales: {
-        x: { ticks: { color: "#888", maxTicksLimit: 10, maxRotation: 0 }, grid: { color: "#2a2a3e" } },
+        x: {
+          type: "linear",
+          min: eventRangeStart.value.getTime(),
+          max: timelineNow.value.getTime(),
+          ticks: {
+            color: "#888",
+            maxTicksLimit: 8,
+            maxRotation: 0,
+            callback: (value) => timelineDateLabel(value, eventRangeHours.value > 24),
+          },
+          grid: { color: "#2a2a3e" },
+        },
         y: {
           min: -0.15,
           max: 1.15,
@@ -1012,7 +1113,7 @@ function buildControllerCards(data) {
       channel,
       status: lease.status === "bound" ? "up" : "down",
       title: `${nameFor[channel]} — ${active ? "активний" : "неактивний"}`,
-      detail1: active ? "активний WAN контролюється scheduler" : "канал буде перевірений після переходу на нього",
+      detail1: active ? "активний WAN контролюється scheduler" : "канал постійно перевіряється окремими source-routed probes",
       detail2: `DHCP ${lease.status || "?"}, main distance ${mainRoute.distance || "?"}, gw ${lease.gateway || mainRoute.gateway || "?"}`,
     };
   });
@@ -1032,6 +1133,8 @@ async function loadRouterLog() {
     events.value = (data.switch_events || []).map((ev) => ({ ...ev, ts: parseLogTime(ev.time) }));
     rawLogCache.value = data.raw_log || [];
     controllerCards.value = buildControllerCards(data);
+    timelineNow.value = new Date();
+    currentWanState.value = (data.controller?.state || "").toLowerCase();
     renderWanTimeline();
     const controller = data.controller || {};
     const history = `історія: disk (${data.history_file_count || 0} файл.)`;
