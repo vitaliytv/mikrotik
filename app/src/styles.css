@@ -345,6 +345,57 @@ canvas {
   flex-wrap: wrap;
 }
 
+.switch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.switch-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.switch-summary-card {
+  padding: 2px 12px;
+  border-left: 4px solid #64748b;
+}
+
+.switch-summary-card.lmt {
+  border-left-color: #60a5fa;
+}
+
+.switch-summary-card.bite {
+  border-left-color: #34d399;
+}
+
+.switch-summary-card span,
+.switch-summary-card strong,
+.switch-summary-card small {
+  display: block;
+}
+
+.switch-summary-card span,
+.switch-summary-card small,
+.switch-history-note {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.switch-summary-card strong {
+  color: #e5e7eb;
+  font-size: 20px;
+  margin: 2px 0;
+}
+
+.switch-history-note {
+  margin: 0 0 12px;
+}
+
 .nw-card {
   flex: 1;
   min-width: 160px;
@@ -412,6 +463,10 @@ table.events th {
   }
 
   .diagnostic-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .switch-summary {
     grid-template-columns: 1fr;
   }
 
