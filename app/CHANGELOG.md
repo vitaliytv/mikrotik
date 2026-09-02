@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.3] - 2026-09-02
+
+### Changed
+
+- Пом’якшено quality failover: severe і soft деградації мають окремі streak, перевагу candidate та hold-down; нові лічильники видно в Decision metrics.
+
 ## [0.6.2] - 2026-08-25
 
 ### Changed
