@@ -23,9 +23,11 @@ MIKROTIK_PASS=твій_пароль
   `DUALWAN-quality-*-icmp|tcp` кожні 5 с вимірюють обидва WAN до `1.1.1.1`.
   Binary outage визначається одночасною відсутністю ICMP і TCP активного WAN;
   перемикання виконується після трьох нових поганих samples, лише якщо
-  candidate відповідає. Quality-перемикання також вимагає три нові degraded
-  samples, здоровий candidate щонайменше на 20 ms кращий і має hold-down
-  5 хвилин; hard outage обходить hold-down. Головного каналу, резерву й
+  candidate відповідає. Severe quality-перемикання вимагає три нові samples,
+  здоровий candidate щонайменше на 20 ms кращий і має hold-down 5 хвилин.
+  Soft quality-перемикання вимагає шість нових samples, перевагу candidate
+  щонайменше 40 ms і hold-down 15 хвилин; hard outage обходить hold-down.
+  Головного каналу, резерву й
   автоматичного повернення немає. Контролер не використовує `ping interface=`,
   який давав хибні failures на RouterOS. Обидва DHCP default-маршрути існують
   постійно, тому під час перемикання немає стану без маршруту. Policy tables

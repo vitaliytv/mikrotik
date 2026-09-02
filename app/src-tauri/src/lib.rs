@@ -461,6 +461,7 @@ struct WanQualitySample {
     tx_collision: Option<u64>,
     active: Option<bool>,
     hard_bad_cycles: Option<u32>,
+    severe_bad_cycles: Option<u32>,
     quality_bad_cycles: Option<u32>,
     last_switch_uptime_ms: Option<f64>,
 }
@@ -650,6 +651,7 @@ fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
         tx_collision: fields.get("tx_collision").and_then(|value| value.parse().ok()),
         active: None,
         hard_bad_cycles: None,
+        severe_bad_cycles: None,
         quality_bad_cycles: None,
         last_switch_uptime_ms: None,
     };
@@ -701,6 +703,9 @@ fn wan_decision_samples(time: String, message: &str) -> Option<Vec<WanQualitySam
         return None;
     }
     let hard_bad_cycles = fields.get("hard_bad").and_then(|value| value.parse().ok());
+    let severe_bad_cycles = fields
+        .get("severe_bad")
+        .and_then(|value| value.parse().ok());
     let quality_bad_cycles = fields.get("quality_bad").and_then(|value| value.parse().ok());
     let last_switch_uptime_ms = fields
         .get("last_switch")
@@ -758,6 +763,7 @@ fn wan_decision_samples(time: String, message: &str) -> Option<Vec<WanQualitySam
                     tx_collision: None,
                     active: Some(active_wan == wan),
                     hard_bad_cycles,
+                    severe_bad_cycles,
                     quality_bad_cycles,
                     last_switch_uptime_ms,
                 })
@@ -965,7 +971,7 @@ mod disk_history_tests {
     fn expands_combined_decision_record_for_both_wans() {
         let samples = wan_decision_samples(
             "2026-08-24 10:20:00".to_string(),
-            "WANQUALITY type=decision active=bite hard_bad=1 quality_bad=2 last_switch=00:05:00 lmt_sent=3 lmt_received=2 lmt_avg=00:00:00.120000 lmt_max=00:00:00.250000 lmt_jitter=00:00:00.180000 lmt_tcp_status=up lmt_tcp=00:00:00.090000 bite_sent=3 bite_received=3 bite_avg=00:00:00.030000 bite_max=00:00:00.040000 bite_jitter=00:00:00.015000 bite_tcp_status=up bite_tcp=00:00:00.035000",
+            "WANQUALITY type=decision active=bite hard_bad=1 severe_bad=3 quality_bad=2 last_switch=00:05:00 lmt_sent=3 lmt_received=2 lmt_avg=00:00:00.120000 lmt_max=00:00:00.250000 lmt_jitter=00:00:00.180000 lmt_tcp_status=up lmt_tcp=00:00:00.090000 bite_sent=3 bite_received=3 bite_avg=00:00:00.030000 bite_max=00:00:00.040000 bite_jitter=00:00:00.015000 bite_tcp_status=up bite_tcp=00:00:00.035000",
         )
         .expect("combined decision record");
 
@@ -978,8 +984,16 @@ mod disk_history_tests {
         assert_eq!(samples[1].active, Some(true));
         assert_eq!(samples[1].tcp_connect_ms, Some(35.0));
         assert_eq!(samples[1].hard_bad_cycles, Some(1));
+        assert_eq!(samples[1].severe_bad_cycles, Some(3));
         assert_eq!(samples[1].quality_bad_cycles, Some(2));
         assert_eq!(samples[1].last_switch_uptime_ms, Some(300_000.0));
+
+        let legacy_samples = wan_decision_samples(
+            "2026-08-24 10:19:00".to_string(),
+            "WANQUALITY type=decision active=lmt hard_bad=0 quality_bad=0 last_switch=00:04:00 lmt_sent=3 lmt_received=3 lmt_avg=00:00:00.030000 lmt_max=00:00:00.040000 lmt_jitter=00:00:00.010000 lmt_tcp_status=up lmt_tcp=00:00:00.035000 bite_sent=3 bite_received=3 bite_avg=00:00:00.032000 bite_max=00:00:00.045000 bite_jitter=00:00:00.012000 bite_tcp_status=up bite_tcp=00:00:00.038000",
+        )
+        .expect("legacy decision record");
+        assert_eq!(legacy_samples[0].severe_bad_cycles, None);
     }
 }
 

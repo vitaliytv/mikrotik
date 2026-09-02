@@ -4,11 +4,13 @@
 :global dwActiveBad
 :global dwActiveState
 :global dwQualityBad
+:global dwSevereBad
 :global dwLmtDone
 :global dwBiteDone
 :global dwLastSwitchUptime
 :if ([:typeof $dwActiveBad] != "num") do={ :set dwActiveBad 0 }
 :if ([:typeof $dwQualityBad] != "num") do={ :set dwQualityBad 0 }
+:if ([:typeof $dwSevereBad] != "num") do={ :set dwSevereBad 0 }
 :if ([:typeof $dwLmtDone] != "num") do={ :set dwLmtDone 0 }
 :if ([:typeof $dwBiteDone] != "num") do={ :set dwBiteDone 0 }
 :if ([:typeof $dwLastSwitchUptime] != "time") do={ :set dwLastSwitchUptime 0ms }
@@ -20,6 +22,7 @@
 :if (([:typeof $dwActiveState] != "str") || ($dwActiveState != $current)) do={
   :set dwActiveBad 0
   :set dwQualityBad 0
+  :set dwSevereBad 0
 }
 :set dwActiveState $current
 
@@ -64,19 +67,28 @@
 :local activeHardBad (($activeReceived < 2) && ($activeTcpStatus != "up"))
 :local candidateAvailable (($candidateReceived >= 2) || ($candidateTcpStatus = "up"))
 :local activeQualityBad false
+:local activeSevereBad false
 :local candidateQualityGood false
-:local candidateBetter false
+:local candidateBetterSoft false
+:local candidateBetterSevere false
 :if ($metricsReady) do={
   :set activeQualityBad (($activeReceived < 3) || ($activeTcpStatus != "up") || ($activeAvg > 80ms) || ($activeMax > 180ms) || ($activeJitter > 120ms) || ($activeTcp > 300ms))
+  :set activeSevereBad (($activeAvg > 150ms) || ($activeMax > 300ms) || ($activeJitter > 250ms) || ($activeTcp > 400ms))
   :set candidateQualityGood (($candidateReceived >= 3) && ($candidateTcpStatus = "up") && ($candidateAvg <= 80ms) && ($candidateMax <= 160ms) && ($candidateJitter <= 100ms) && ($candidateTcp <= 250ms))
-  :set candidateBetter (($candidateAvg + 20ms) < $activeAvg)
+  :set candidateBetterSoft (($candidateAvg + 40ms) < $activeAvg)
+  :set candidateBetterSevere (($candidateAvg + 20ms) < $activeAvg)
 }
 
 # A streak advances only on a fresh source-routed ICMP sample from the active WAN.
 :if (($activeDone != $lastActiveDone) && $metricsReady) do={
   :if ($current = "lmt") do={ :set dwLmtDone $activeDone } else={ :set dwBiteDone $activeDone }
   :if ($activeHardBad) do={ :set dwActiveBad ($dwActiveBad + 1) } else={ :set dwActiveBad 0 }
-  :if ($activeQualityBad && $candidateQualityGood && $candidateBetter) do={
+  :if ($activeSevereBad && $candidateQualityGood && $candidateBetterSevere) do={
+    :set dwSevereBad ($dwSevereBad + 1)
+  } else={
+    :set dwSevereBad 0
+  }
+  :if ($activeQualityBad && $candidateQualityGood && $candidateBetterSoft) do={
     :set dwQualityBad ($dwQualityBad + 1)
   } else={
     :set dwQualityBad 0
@@ -84,16 +96,22 @@
 }
 
 :local nowUptime [/system resource get uptime]
-:local qualityHoldExpired (($nowUptime - $dwLastSwitchUptime) >= 5m)
+:local severeHoldExpired (($nowUptime - $dwLastSwitchUptime) >= 5m)
+:local softHoldExpired (($nowUptime - $dwLastSwitchUptime) >= 15m)
 :local shouldSwitch false
 :local reason "active-healthy"
 :if (($dwActiveBad >= 3) && $candidateAvailable) do={
   :set shouldSwitch true
   :set reason "active-source-probes-down-3x-candidate-up"
 } else={
-  :if (($dwQualityBad >= 3) && $qualityHoldExpired) do={
+  :if (($dwSevereBad >= 3) && $severeHoldExpired) do={
     :set shouldSwitch true
-    :set reason "active-quality-degraded-3x-candidate-better"
+    :set reason "active-quality-severe-3x-candidate-better"
+  } else={
+    :if (($dwQualityBad >= 6) && $softHoldExpired) do={
+      :set shouldSwitch true
+      :set reason "active-quality-soft-6x-candidate-better"
+    }
   }
 }
 
@@ -111,6 +129,7 @@
   :set dwActiveState $next
   :set dwActiveBad 0
   :set dwQualityBad 0
+  :set dwSevereBad 0
   :set dwLastSwitchUptime $nowUptime
   :log warning ("DUALWAN state=" . $next . " from=" . $current . " reason=" . $reason . " active-icmp=" . $activeReceived . "/3 active-avg=" . $activeAvg . " active-max=" . $activeMax . " active-jitter=" . $activeJitter . " active-tcp=" . $activeTcpStatus . "/" . $activeTcp . " candidate-icmp=" . $candidateReceived . "/3 candidate-avg=" . $candidateAvg . " candidate-tcp=" . $candidateTcpStatus . "/" . $candidateTcp)
 }
