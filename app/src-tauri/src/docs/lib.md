@@ -3,7 +3,7 @@ type: Rust Module
 title: lib.rs
 resource: app/src-tauri/src/lib.rs
 docgen:
-  crc: fc9f5449
+  crc: 25df6400
   model: openai-codex/gpt-5.5
   score: 100
   issues: judge:inaccurate:0.99

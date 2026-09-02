@@ -88,7 +88,7 @@
     <div class="box">
       <h2>Decision metrics контролера</h2>
       <table class="events">
-        <thead><tr><th>Час</th><th>WAN</th><th>Роль</th><th>Відповіді</th><th>Avg / Max RTT</th><th>Jitter</th><th>TCP</th><th>Streak hard / quality</th></tr></thead>
+        <thead><tr><th>Час</th><th>WAN</th><th>Роль</th><th>Відповіді</th><th>Avg / Max RTT</th><th>Jitter</th><th>TCP</th><th>Streak hard / severe / soft</th></tr></thead>
         <tbody>
           <tr v-for="row in recentDecisionRows" :key="row.key" :class="row.statusClass">
             <td>{{ row.time }}</td><td>{{ row.wan }}</td><td>{{ row.role }}</td><td>{{ row.responses }}</td><td>{{ row.rtt }}</td><td>{{ row.jitter }}</td><td>{{ row.tcp }}</td><td>{{ row.streak }}</td>
@@ -401,7 +401,7 @@ const recentDecisionRows = computed(() => qualitySamples.value
       rtt: `${formatQualityMilliseconds(sample.avg_rtt_ms)} / ${formatQualityMilliseconds(sample.max_rtt_ms)}`,
       jitter: formatQualityMilliseconds(sample.jitter_ms),
       tcp: `${sample.status?.toUpperCase() || "—"} · ${formatQualityMilliseconds(sample.tcp_connect_ms)}`,
-      streak: sample.active ? `${sample.hard_bad_cycles ?? 0} / ${sample.quality_bad_cycles ?? 0}` : "—",
+      streak: sample.active ? `${sample.hard_bad_cycles ?? 0} / ${sample.severe_bad_cycles ?? 0} / ${sample.quality_bad_cycles ?? 0}` : "—",
       statusClass: degraded ? "down" : "up",
     };
   }));

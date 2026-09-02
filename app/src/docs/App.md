@@ -3,7 +3,7 @@ type: Vue Component
 title: App.vue
 resource: app/src/App.vue
 docgen:
-  crc: 8baf1ce5
+  crc: 26583fe7
   model: omlx/gemma-4-26b-a4b-it
   score: 100
   issues: judge-refine:kept-original,judge:inaccurate:0.98

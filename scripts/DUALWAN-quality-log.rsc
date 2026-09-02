@@ -4,6 +4,7 @@
 :global dwActiveBad
 :global dwActiveState
 :global dwQualityBad
+:global dwSevereBad
 :global dwLastSwitchUptime
 
 :local metric do={
@@ -34,9 +35,11 @@
 :if ([:typeof [:find $lmtTables "main:1"]] != "nil") do={ :set active "lmt" }
 :local hardBad 0
 :local qualityBad 0
+:local severeBad 0
 :local lastSwitch 0ms
 :if ([:typeof $dwActiveBad] = "num") do={ :set hardBad $dwActiveBad }
 :if ([:typeof $dwQualityBad] = "num") do={ :set qualityBad $dwQualityBad }
+:if ([:typeof $dwSevereBad] = "num") do={ :set severeBad $dwSevereBad }
 :if ([:typeof $dwLastSwitchUptime] = "time") do={ :set lastSwitch $dwLastSwitchUptime }
 
-:log info ("WANQUALITY type=decision active=" . $active . " hard_bad=" . $hardBad . " quality_bad=" . $qualityBad . " last_switch=" . $lastSwitch . " lmt_sent=3 lmt_received=" . $lmtReceived . " lmt_avg=" . $lmtAvg . " lmt_max=" . $lmtMax . " lmt_jitter=" . $lmtJitter . " lmt_tcp_status=" . $lmtTcpStatus . " lmt_tcp=" . $lmtTcp . " bite_sent=3 bite_received=" . $biteReceived . " bite_avg=" . $biteAvg . " bite_max=" . $biteMax . " bite_jitter=" . $biteJitter . " bite_tcp_status=" . $biteTcpStatus . " bite_tcp=" . $biteTcp)
+:log info ("WANQUALITY type=decision active=" . $active . " hard_bad=" . $hardBad . " severe_bad=" . $severeBad . " quality_bad=" . $qualityBad . " last_switch=" . $lastSwitch . " lmt_sent=3 lmt_received=" . $lmtReceived . " lmt_avg=" . $lmtAvg . " lmt_max=" . $lmtMax . " lmt_jitter=" . $lmtJitter . " lmt_tcp_status=" . $lmtTcpStatus . " lmt_tcp=" . $lmtTcp . " bite_sent=3 bite_received=" . $biteReceived . " bite_avg=" . $biteAvg . " bite_max=" . $biteMax . " bite_jitter=" . $biteJitter . " bite_tcp_status=" . $biteTcpStatus . " bite_tcp=" . $biteTcp)
