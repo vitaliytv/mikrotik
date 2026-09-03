@@ -40,8 +40,14 @@ MIKROTIK_PASS=твій_пароль
   його source зберігається у `scripts/DUALWAN-quality-log.rsc`.
 - **RouterOS Netwatch** `WAN-quality-*` — десять monitor-only probes кожні
   15 хвилин: ICMP до `1.1.1.1` і `8.8.8.8`, TCP connect до `1.1.1.1:443` та
-  DNS resolve `cloudflare.com` через обидва налаштовані upstream resolver —
-  `8.8.8.8` і `8.8.4.4`, окремо через LMT і BITE. Вони
+  DNS resolve `cloudflare.com`: public reference `8.8.8.8` перевіряється
+  через обидва WAN, а provider resolver кожного modem — через власний канал;
+  чотири DNS probes рознесені в часі, щоб не створювати синхронні failures.
+  RouterOS роздає себе (`192.168.88.1`) як локальний caching resolver,
+  використовує швидкий BITE DNS `192.168.8.1` із fallback на LMT DNS
+  `192.168.0.1`, тримає cache 4096 KiB, чекає відповідь від одного server до
+  2 s і обмежує повний lookup до 4 s.
+  Налаштування зберігається у `scripts/DNS-cache.rsc`. Monitor-only probes
   записують `sent/received`, packet loss, `min/avg/max RTT`, jitter, stdev,
   TCP connect time та DNS status/answer у ротацію `wan-quality.*.txt` на диску.
   Source-specific routing rules
