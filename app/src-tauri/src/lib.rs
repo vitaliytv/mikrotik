@@ -467,6 +467,17 @@ struct WanQualitySample {
     severe_bad_cycles: Option<u32>,
     quality_bad_cycles: Option<u32>,
     last_switch_uptime_ms: Option<f64>,
+    modem_model: Option<String>,
+    operator: Option<String>,
+    network: Option<String>,
+    cell_id: Option<String>,
+    pci: Option<String>,
+    band: Option<String>,
+    rsrp_dbm: Option<f64>,
+    rsrq_db: Option<f64>,
+    sinr_db: Option<f64>,
+    signal_bars: Option<u32>,
+    carrier_aggregation: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -660,6 +671,17 @@ fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
         severe_bad_cycles: None,
         quality_bad_cycles: None,
         last_switch_uptime_ms: None,
+        modem_model: fields.get("model").map(|value| value.to_string()),
+        operator: fields.get("operator").map(|value| value.to_string()),
+        network: fields.get("network").map(|value| value.to_string()),
+        cell_id: fields.get("cell_id").map(|value| value.to_string()),
+        pci: fields.get("pci").map(|value| value.to_string()),
+        band: fields.get("band").map(|value| value.to_string()),
+        rsrp_dbm: fields.get("rsrp_dbm").and_then(|value| value.parse().ok()),
+        rsrq_db: fields.get("rsrq_db").and_then(|value| value.parse().ok()),
+        sinr_db: fields.get("sinr_db").and_then(|value| value.parse().ok()),
+        signal_bars: fields.get("signal_bars").and_then(|value| value.parse().ok()),
+        carrier_aggregation: fields.get("ca").map(|value| value.to_string()),
     };
 
     match kind.as_str() {
@@ -692,6 +714,9 @@ fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
             sample.running?;
             sample.tx_queue_drop?;
             sample.link_downs?;
+        }
+        "radio" => {
+            sample.status.as_ref()?;
         }
         _ => return None,
     }
@@ -784,6 +809,17 @@ fn wan_decision_samples(time: String, message: &str) -> Option<Vec<WanQualitySam
                     severe_bad_cycles,
                     quality_bad_cycles,
                     last_switch_uptime_ms,
+                    modem_model: None,
+                    operator: None,
+                    network: None,
+                    cell_id: None,
+                    pci: None,
+                    band: None,
+                    rsrp_dbm: None,
+                    rsrq_db: None,
+                    sinr_db: None,
+                    signal_bars: None,
+                    carrier_aggregation: None,
                 })
             })
             .collect(),
@@ -936,6 +972,20 @@ mod disk_history_tests {
         assert_eq!(interface.running, Some(true));
         assert_eq!(interface.tx_queue_drop, Some(2696));
         assert_eq!(interface.link_downs, Some(3));
+
+        let radio = wan_quality_sample(
+            "2026-09-07 09:05:00".to_string(),
+            "WANQUALITY type=radio wan=bite status=up model=B628-350 operator=Bite_LV network=LTE_CA cell_id=12345 pci=101 band=B3+B20 rsrp_dbm=-97 rsrq_db=-12.5 sinr_db=8 signal_bars=4 ca=20MHz",
+        )
+        .expect("radio sample");
+        assert_eq!(radio.modem_model.as_deref(), Some("B628-350"));
+        assert_eq!(radio.operator.as_deref(), Some("Bite_LV"));
+        assert_eq!(radio.cell_id.as_deref(), Some("12345"));
+        assert_eq!(radio.rsrp_dbm, Some(-97.0));
+        assert_eq!(radio.rsrq_db, Some(-12.5));
+        assert_eq!(radio.sinr_db, Some(8.0));
+        assert_eq!(radio.signal_bars, Some(4));
+        assert_eq!(radio.carrier_aggregation.as_deref(), Some("20MHz"));
     }
 
     #[test]

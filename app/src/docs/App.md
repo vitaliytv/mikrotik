@@ -3,7 +3,7 @@ type: Vue Component
 title: App.vue
 resource: app/src/App.vue
 docgen:
-  crc: 56914629
+  crc: 900bf516
   model: omlx/gemma-4-26b-a4b-it
   score: 100
   issues: judge-refine:kept-original,judge:inaccurate:0.98
@@ -24,6 +24,7 @@ docgen:
 6. Для глибокої діагностики доступний перегляд сирих записів логу з можливістю текстового фільтрування.
 7. Звітність та історія діагностики зберігаються у локальному сховищі пристрою для збереження контексту між сесіями; вони не впливають на timeline WAN.
 8. Картки якості LMT і BITE показують останню пасивну швидкість upload, configured capacity та активну AQM queue з постійного дискового логу RouterOS.
+9. Секція Cellular radio показує останні Cell ID, PCI, band, carrier aggregation, RSRP, RSRQ, SINR і signal bars для кожного modem та позначає критично слабкі значення.
 
 ## Гарантії поведінки
 

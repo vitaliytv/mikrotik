@@ -69,7 +69,7 @@
   </section>
 
   <section v-if="activeTab === 'quality'" class="page" aria-label="Якість каналів">
-    <PageGuide title="Якість" purpose="Порівнює LMT і BITE незалежно від active WAN на рівнях ICMP, TCP, DNS та фізичного інтерфейсу." readings="RTT, jitter, stdev і loss описують ICMP; TCP показує connect time, DNS — успішність резолвінгу; counters фіксують drops і link-downs." actions="Оновити перечитує постійну історію без зміни маршрутів або active WAN." when="Використовуйте для пошуку нестабільного каналу та визначення рівня проблеми: маршрут, сервіс або інтерфейс." />
+    <PageGuide title="Якість" purpose="Порівнює LMT і BITE незалежно від active WAN на рівнях cellular radio, ICMP, TCP, DNS та фізичного інтерфейсу." readings="Cell ID/PCI/band і RSRP/RSRQ/SINR показують базову станцію та якість радіосигналу; RTT, jitter, loss, TCP, DNS і counters — якість маршруту та Ethernet." actions="Оновити перечитує постійну історію без зміни маршрутів або active WAN." when="Використовуйте для пошуку нестабільного каналу та відокремлення radio-проблеми від congestion, маршруту або інтерфейсу." />
     <header>
       <div><h1>Якість WAN за розкладом</h1><div class="controls"><span>{{ qualityStatus }}</span></div></div>
       <q-btn flat dense round icon="sym_o_refresh" title="Оновити якість" :loading="qualityBusy" @click="loadWanQuality" />
@@ -79,6 +79,17 @@
         <div class="title">{{ card.title }}</div>
         <div class="detail">{{ card.detail1 }}</div>
         <div class="detail">{{ card.detail2 }}</div>
+      </div>
+    </div>
+    <div class="box">
+      <h2>Cellular radio</h2>
+      <div class="overview-cards">
+        <div v-for="card in radioQualityCards" :key="card.wan" :class="['nw-card', card.status]">
+          <div class="title">{{ card.title }}</div>
+          <div class="detail">{{ card.detail1 }}</div>
+          <div class="detail">{{ card.detail2 }}</div>
+          <div class="detail">{{ card.detail3 }}</div>
+        </div>
       </div>
     </div>
     <div class="charts quality-charts">
@@ -351,6 +362,10 @@ const recentEvents = computed(() => filteredEvents.value.slice(-300).reverse());
 const qualityCards = computed(() => [
   qualityCard("lmt", "LMT (WAN1)"),
   qualityCard("bite", "BITE (WAN2)"),
+]);
+const radioQualityCards = computed(() => [
+  radioQualityCard("lmt", "LMT radio"),
+  radioQualityCard("bite", "BITE radio"),
 ]);
 const recentQualityRows = computed(() => qualitySamples.value.filter((sample) => sample.kind === "icmp").slice(-80).reverse().map((sample) => ({
   key: `${sample.time}-${sample.wan}-${sample.target}`,
@@ -804,6 +819,42 @@ function formatQualityMilliseconds(value) {
 function formatQualityMegabits(value) {
   if (value == null || !Number.isFinite(Number(value))) return "—";
   return `${(Number(value) / 1_000_000).toFixed(1)} Mbps`;
+}
+
+function formatRadioMetric(value, unit) {
+  const formatted = formatQualityNumber(value);
+  return formatted === "—" ? formatted : `${formatted} ${unit}`;
+}
+
+function displayRadioValue(value) {
+  return value ? String(value).replaceAll("_", " ") : "—";
+}
+
+function radioQualityCard(wan, title) {
+  const samples = qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "radio");
+  const latest = samples.at(-1);
+  if (!latest) {
+    return {
+      wan,
+      title,
+      status: "unknown",
+      detail1: "Ще немає radio telemetry",
+      detail2: "Запустіть modem radio collector",
+      detail3: "Інтервал збору — 5 хвилин",
+    };
+  }
+  const degraded = latest.status !== "up"
+    || Number(latest.rsrp_dbm) <= -110
+    || Number(latest.rsrq_db) <= -15
+    || (latest.sinr_db != null && Number(latest.sinr_db) < 0);
+  return {
+    wan,
+    title: `${title} · ${displayRadioValue(latest.modem_model)}`,
+    status: degraded ? "down" : "up",
+    detail1: `${displayRadioValue(latest.operator)} · ${displayRadioValue(latest.network)} · band ${displayRadioValue(latest.band)} · CA ${displayRadioValue(latest.carrier_aggregation)}`,
+    detail2: `Cell ${displayRadioValue(latest.cell_id)} · PCI ${displayRadioValue(latest.pci)} · signal ${latest.signal_bars ?? "—"}/5`,
+    detail3: `RSRP ${formatRadioMetric(latest.rsrp_dbm, "dBm")} · RSRQ ${formatRadioMetric(latest.rsrq_db, "dB")} · SINR ${formatRadioMetric(latest.sinr_db, "dB")} · ${latest.time}`,
+  };
 }
 
 function qualityCard(wan, title) {

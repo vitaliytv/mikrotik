@@ -3,7 +3,7 @@ type: Rust Module
 title: lib.rs
 resource: app/src-tauri/src/lib.rs
 docgen:
-  crc: 32e0c412
+  crc: f95b6887
   model: openai-codex/gpt-5.5
   score: 100
   issues: judge:inaccurate:0.99
@@ -22,7 +22,7 @@ docgen:
 - `run_wan_speed_test` відкриває Tauri-команді запуск WAN speed test і повертає той самий JSON-результат.
 - `read_router_diagnostic_impl` збирає короткий діагностичний знімок доступності RouterOS, активного WAN, scheduler/script стану та поточних script jobs; за помилок конфігурації або підключення повертає fail-safe JSON із порожніми чи `unknown` полями.
 - `read_router_diagnostic` відкриває Tauri-команді читання діагностики RouterOS.
-- `read_wan_quality_impl` читає постійну історію якості обох WAN із файлів `wan-quality.*.txt` на диску RouterOS і повертає JSON зі зразками, пасивною швидкістю upload, назвою AQM queue, її configured capacity та кількістю знайдених history-файлів.
+- `read_wan_quality_impl` читає постійну історію якості обох WAN із файлів `wan-quality.*.txt` на диску RouterOS і повертає JSON зі зразками, cellular radio-метриками, пасивною швидкістю upload, назвою AQM queue, її configured capacity та кількістю знайдених history-файлів.
 - `read_wan_quality` відкриває Tauri-команді читання історії якості WAN.
 - `read_router_log_impl` збирає стан dual-WAN controller, DHCP, default routes, історію перемикань із дискових history-файлів і останні рядки RouterOS log; повертає JSON без запису у ФС чи БД.
 - `read_router_log` відкриває Tauri-команді читання стану controller і журналів RouterOS.
@@ -36,7 +36,7 @@ docgen:
 - run_wan_speed_test — ініціює тест швидкості WAN та повертає його підсумок для користувача або автоматики.
 - read_router_diagnostic_impl — збирає діагностичний стан роутера, щоб швидко оцінити доступність, маршрутизацію й роботу WAN.
 - read_router_diagnostic — надає узагальнену діагностику роутера для перегляду без ручного виконання команд RouterOS.
-- read_wan_quality_impl — читає постійну історію якості обох WAN та AQM/upload telemetry із `wan-quality.*.txt` на диску RouterOS.
+- read_wan_quality_impl — читає постійну історію якості обох WAN, radio та AQM/upload telemetry із `wan-quality.*.txt` на диску RouterOS.
 - read_wan_quality — повертає накопичену якість WAN-каналів для аналізу стабільності підключень.
 - read_router_log_impl — читає журнал RouterOS, щоб побачити події роутера, помилки та зміни стану мережі.
 - read_router_log — надає останні записи журналу роутера для діагностики інцидентів.
