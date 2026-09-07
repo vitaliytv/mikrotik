@@ -60,6 +60,25 @@ MIKROTIK_PASS=твій_пароль
   `link-downs`, FCS/alignment errors і collisions для `ether3` та `ether1`.
   Source зберігається у `scripts/WAN-quality-interface.rsc`. Поточна ротація
   20 × 1000 рядків зберігає приблизно 24 дні розширеної історії.
+- **Cellular radio telemetry** — macOS LaunchAgent раз на 5 хвилин читає
+  authenticated diagnostics обох modem і додає до тієї самої disk history
+  записи `WANQUALITY type=radio`: model/operator/network, Cell ID, PCI, band,
+  RSRP, RSRQ, SINR, signal bars і carrier aggregation. Паролі modem зберігаються
+  тільки в macOS Keychain у services `ai.vitalii.mymikrotik.modem.lmt` та
+  `ai.vitalii.mymikrotik.modem.bite`; у RouterOS log не потрапляють passwords,
+  session tokens, IMEI, IMSI, ICCID або serial. Встановлення collector і
+  безпечне інтерактивне введення обох admin passwords:
+
+  ```sh
+  python3 scripts/modem_radio_collector.py --install
+  ```
+
+  Для одноразової перевірки sanitized output без запису на RouterOS:
+
+  ```sh
+  python3 scripts/modem_radio_collector.py --dry-run
+  ```
+
 - **Per-WAN CAKE/AQM** — egress queues `cake-wan-lmt` на `ether3` і
   `cake-wan-bite` на `ether1` формують cellular upload до консервативних
   `7 Mbps` і `10 Mbps`. Це переносить bottleneck у RouterOS, де CAKE може
@@ -81,8 +100,8 @@ MIKROTIK_PASS=твій_пароль
   - Панель scheduler — читає стан `DUALWAN-health`, DHCP route priorities,
     probes активного WAN та перемикання напряму з RouterOS.
   - Панель «Якість» — chunked-читає постійну `wan-quality` історію через
-    `/file/read` і показує RTT/jitter/stdev, packet loss, TCP/DNS checks та
-    зміни фізичних interface counters для LMT і BITE.
+    `/file/read` і показує cellular radio, RTT/jitter/stdev, packet loss,
+    TCP/DNS checks та зміни фізичних interface counters для LMT і BITE.
   - Панель "Агент" — локальний LLM-агент (omlx) лише з інструментами читання
     стану та логу; він не може змінювати конфігурацію RouterOS.
 
