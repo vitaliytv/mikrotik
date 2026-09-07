@@ -801,6 +801,11 @@ function formatQualityMilliseconds(value) {
   return formatted === "—" ? formatted : `${formatted} ms`;
 }
 
+function formatQualityMegabits(value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return `${(Number(value) / 1_000_000).toFixed(1)} Mbps`;
+}
+
 function qualityCard(wan, title) {
   const decisionSamples = qualitySamples.value.filter((sample) => sample.wan === wan && sample.kind === "decision");
   const wanSamples = decisionSamples.length
@@ -819,12 +824,14 @@ function qualityCard(wan, title) {
   const sent = sum("sent");
   const received = sum("received");
   const loss = sent > 0 ? ((sent - received) / sent) * 100 : 100;
+  const telemetry = latest[0];
+  const aqm = telemetry?.aqm?.startsWith("cake-") ? "CAKE" : telemetry?.aqm || "AQM —";
   return {
     wan,
     title,
     status: loss > 0 ? "down" : "up",
     detail1: `RTT ${formatQualityMilliseconds(average("avg_rtt_ms"))} · jitter ${formatQualityMilliseconds(average("jitter_ms"))}`,
-    detail2: `loss ${formatQualityNumber(loss)}% · ${received}/${sent}${latest[0]?.active == null ? "" : latest[0].active ? " · ACTIVE" : " · candidate"} · ${latestTime}`,
+    detail2: `loss ${formatQualityNumber(loss)}% · ${received}/${sent}${telemetry?.active == null ? "" : telemetry.active ? " · ACTIVE" : " · candidate"} · ↑ ${formatQualityMegabits(telemetry?.tx_bps)}/${formatQualityMegabits(telemetry?.capacity_bps)} · ${aqm} · ${latestTime}`,
   };
 }
 

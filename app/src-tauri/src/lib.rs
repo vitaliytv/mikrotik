@@ -459,6 +459,9 @@ struct WanQualitySample {
     rx_fcs_error: Option<u64>,
     rx_align_error: Option<u64>,
     tx_collision: Option<u64>,
+    tx_bps: Option<u64>,
+    aqm: Option<String>,
+    capacity_bps: Option<u64>,
     active: Option<bool>,
     hard_bad_cycles: Option<u32>,
     severe_bad_cycles: Option<u32>,
@@ -649,6 +652,9 @@ fn wan_quality_sample(time: String, message: &str) -> Option<WanQualitySample> {
         rx_fcs_error: fields.get("rx_fcs_error").and_then(|value| value.parse().ok()),
         rx_align_error: fields.get("rx_align_error").and_then(|value| value.parse().ok()),
         tx_collision: fields.get("tx_collision").and_then(|value| value.parse().ok()),
+        tx_bps: fields.get("tx_bps").and_then(|value| value.parse().ok()),
+        aqm: fields.get("aqm").map(|value| value.to_string()),
+        capacity_bps: fields.get("capacity_bps").and_then(|value| value.parse().ok()),
         active: None,
         hard_bad_cycles: None,
         severe_bad_cycles: None,
@@ -735,6 +741,15 @@ fn wan_decision_samples(time: String, message: &str) -> Option<Vec<WanQualitySam
                 let tcp_connect_ms = fields
                     .get(format!("{wan}_tcp").as_str())
                     .and_then(|value| routeros_duration_ms(value));
+                let tx_bps = fields
+                    .get(format!("{wan}_tx_bps").as_str())
+                    .and_then(|value| value.parse().ok());
+                let aqm = fields
+                    .get(format!("{wan}_aqm").as_str())
+                    .map(|value| value.to_string());
+                let capacity_bps = fields
+                    .get(format!("{wan}_capacity_bps").as_str())
+                    .and_then(|value| value.parse().ok());
                 Some(WanQualitySample {
                     time: time.clone(),
                     wan: wan.to_string(),
@@ -761,6 +776,9 @@ fn wan_decision_samples(time: String, message: &str) -> Option<Vec<WanQualitySam
                     rx_fcs_error: None,
                     rx_align_error: None,
                     tx_collision: None,
+                    tx_bps,
+                    aqm,
+                    capacity_bps,
                     active: Some(active_wan == wan),
                     hard_bad_cycles,
                     severe_bad_cycles,
@@ -971,7 +989,7 @@ mod disk_history_tests {
     fn expands_combined_decision_record_for_both_wans() {
         let samples = wan_decision_samples(
             "2026-08-24 10:20:00".to_string(),
-            "WANQUALITY type=decision active=bite hard_bad=1 severe_bad=3 quality_bad=2 last_switch=00:05:00 lmt_sent=3 lmt_received=2 lmt_avg=00:00:00.120000 lmt_max=00:00:00.250000 lmt_jitter=00:00:00.180000 lmt_tcp_status=up lmt_tcp=00:00:00.090000 bite_sent=3 bite_received=3 bite_avg=00:00:00.030000 bite_max=00:00:00.040000 bite_jitter=00:00:00.015000 bite_tcp_status=up bite_tcp=00:00:00.035000",
+            "WANQUALITY type=decision active=bite hard_bad=1 severe_bad=3 quality_bad=2 last_switch=00:05:00 lmt_sent=3 lmt_received=2 lmt_avg=00:00:00.120000 lmt_max=00:00:00.250000 lmt_jitter=00:00:00.180000 lmt_tcp_status=up lmt_tcp=00:00:00.090000 lmt_tx_bps=1250000 lmt_aqm=cake-wan-lmt lmt_capacity_bps=7000000 bite_sent=3 bite_received=3 bite_avg=00:00:00.030000 bite_max=00:00:00.040000 bite_jitter=00:00:00.015000 bite_tcp_status=up bite_tcp=00:00:00.035000 bite_tx_bps=2500000 bite_aqm=cake-wan-bite bite_capacity_bps=10000000",
         )
         .expect("combined decision record");
 
@@ -987,6 +1005,11 @@ mod disk_history_tests {
         assert_eq!(samples[1].severe_bad_cycles, Some(3));
         assert_eq!(samples[1].quality_bad_cycles, Some(2));
         assert_eq!(samples[1].last_switch_uptime_ms, Some(300_000.0));
+        assert_eq!(samples[0].tx_bps, Some(1_250_000));
+        assert_eq!(samples[0].aqm.as_deref(), Some("cake-wan-lmt"));
+        assert_eq!(samples[0].capacity_bps, Some(7_000_000));
+        assert_eq!(samples[1].tx_bps, Some(2_500_000));
+        assert_eq!(samples[1].capacity_bps, Some(10_000_000));
 
         let legacy_samples = wan_decision_samples(
             "2026-08-24 10:19:00".to_string(),

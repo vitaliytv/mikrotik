@@ -60,6 +60,14 @@ MIKROTIK_PASS=твій_пароль
   `link-downs`, FCS/alignment errors і collisions для `ether3` та `ether1`.
   Source зберігається у `scripts/WAN-quality-interface.rsc`. Поточна ротація
   20 × 1000 рядків зберігає приблизно 24 дні розширеної історії.
+- **Per-WAN CAKE/AQM** — egress queues `cake-wan-lmt` на `ether3` і
+  `cake-wan-bite` на `ether1` формують cellular upload до консервативних
+  `7 Mbps` і `10 Mbps`. Це переносить bottleneck у RouterOS, де CAKE може
+  контролювати bufferbloat та ізолювати flows. Обидві queues працюють
+  незалежно від active WAN; `DUALWAN-quality-log` щохвилини додає фактичний
+  `tx_bps`, queue name і configured capacity до disk history. Конфігурація та
+  ручний відкат зберігаються у `scripts/WAN-AQM.rsc` і
+  `scripts/WAN-AQM-rollback.rsc`.
 - **IPv6:** не налаштований. IPv6 DHCPv6-клієнт LMT видалено 2026-07-15,
   оскільки modem не видавав адресу або delegated prefix.
 - **backups/routeros-current.rsc** — санітизований текстовий export RouterOS;
