@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.4] - 2026-09-07
+
+### Changed
+
+- feat: show per-WAN CAKE upload telemetry
+
 ## [0.6.3] - 2026-09-02
 
 ### Changed
