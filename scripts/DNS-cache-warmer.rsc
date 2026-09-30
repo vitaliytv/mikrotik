@@ -3,7 +3,6 @@
 
 :local names {"ocsp.digicert.com"; "ocsp.sectigo.com"; "ocsp.globalsign.com"; "crl3.digicert.com"}
 :local failed 0
-:local slow 0
 :local maximumMs 0
 
 :foreach name in=$names do={
@@ -16,12 +15,10 @@
   :if ($elapsedMs > $maximumMs) do={ :set maximumMs $elapsedMs }
   :if ([:len $errorText] > 0) do={
     :set failed ($failed + 1)
-  } else={
-    :if ($elapsedMs >= 500) do={ :set slow ($slow + 1) }
   }
 }
 
-# Warm hits stay silent. A slow refresh or failure remains visible on disk.
-:if (($failed > 0) || ($slow > 0)) do={
-  :log info ("WANQUALITY type=dns-cache-warm names=" . [:len $names] . " failed=" . $failed . " slow=" . $slow . " max_ms=" . $maximumMs)
+# Successful warm and refresh passes stay silent; only failures reach disk.
+:if ($failed > 0) do={
+  :log info ("WANQUALITY type=dns-cache-warm names=" . [:len $names] . " failed=" . $failed . " max_ms=" . $maximumMs)
 }
