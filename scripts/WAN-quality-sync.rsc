@@ -7,6 +7,8 @@
   :local tableName $3
   :local clientId [/ip dhcp-client find where name=$clientName]
   :if ([:len $clientId] != 1) do={ :error ("WANQUALITY sync missing DHCP client=" . $clientName) }
+  # A deliberately disabled WAN is absent from an LMT-only experiment.
+  :if ([/ip dhcp-client get $clientId disabled]) do={ :return true }
   :local addressWithMask [/ip dhcp-client get $clientId address]
   :local slash [:find $addressWithMask "/"]
   :if ([:typeof $slash] = "nil") do={ :error ("WANQUALITY sync missing address wan=" . $wan) }

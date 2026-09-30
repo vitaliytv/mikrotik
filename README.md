@@ -68,6 +68,20 @@ MIKROTIK_PASS=твій_пароль
   `tx_bps`, queue name і configured capacity до disk history. Конфігурація та
   ручний відкат зберігаються у `scripts/WAN-AQM.rsc` і
   `scripts/WAN-AQM-rollback.rsc`.
+- **Ручний LMT-only експеримент** — `scripts/LMT-only-experiment-start.rsc`
+  вимикає dual-WAN controller, decision/BITE probes і BITE DHCP client,
+  переводить DNS на `192.168.0.1`, але залишає monitor-only LMT probes та disk
+  telemetry. Автоматичного завершення немає. Повернення dual-WAN виконує
+  fail-safe script `scripts/LMT-only-experiment-stop.rsc`: controller
+  вмикається лише після успішного BITE DHCP bind і source sync. Погоджений
+  сценарій та критерії семиденного тесту описані у
+  `docs/specs/2026-09-22-lmt-only-experiment.md`.
+- **DNS telemetry та cache warming** — `scripts/WAN-quality-dns-cold.rsc`
+  кожні 15 хвилин вимірює реальний uncached positive wildcard lookup і пише
+  `WANQUALITY type=dns-cold` з `duration_ms` у disk history.
+  `scripts/DNS-cache-warmer.rsc` щохвилини підтримує в RouterOS cache основні
+  OCSP/CRL hostnames; успішні проходи мовчать, а failure пишеться агрегованим
+  `WANQUALITY type=dns-cache-warm` записом.
 - **IPv6:** не налаштований. IPv6 DHCPv6-клієнт LMT видалено 2026-07-15,
   оскільки modem не видавав адресу або delegated prefix.
 - **backups/routeros-current.rsc** — санітизований текстовий export RouterOS;
