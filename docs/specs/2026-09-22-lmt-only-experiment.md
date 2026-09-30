@@ -56,3 +56,10 @@ monitor-only LMT quality probes та пасивні interface counters.
 - Після активації LMT має `main:1`, BITE DHCP client вимкнений, DNS налаштований
   тільки на `192.168.0.1`, а LMT ICMP/DNS telemetry продовжує записуватися у
   `wan-quality.0.txt`.
+- Live-тести 2026-09-30 відхилили Google і Cloudflare DoH: cold lookup лишався
+  на рівні 1–3 секунд, а Cloudflare також потребував окремого CA. Усі DNS over
+  port 53 resolver-и показали майже однакові затримки, що узгоджується з
+  перехопленням або централізованою обробкою DNS у мережі LMT.
+- Замість DoH встановлено cache warmer для основних OCSP/CRL hostnames та
+  окремий cold DNS probe. Він вимірює uncached positive wildcard lookup кожні 15
+  хвилин і записує `duration_ms` у `wan-quality` disk history.

@@ -76,6 +76,12 @@ MIKROTIK_PASS=твій_пароль
   вмикається лише після успішного BITE DHCP bind і source sync. Погоджений
   сценарій та критерії семиденного тесту описані у
   `docs/specs/2026-09-22-lmt-only-experiment.md`.
+- **DNS telemetry та cache warming** — `scripts/WAN-quality-dns-cold.rsc`
+  кожні 15 хвилин вимірює реальний uncached positive wildcard lookup і пише
+  `WANQUALITY type=dns-cold` з `duration_ms` у disk history.
+  `scripts/DNS-cache-warmer.rsc` щохвилини підтримує в RouterOS cache основні
+  OCSP/CRL hostnames; warm проходи мовчать, а slow refresh або failure пишеться
+  агрегованим `WANQUALITY type=dns-cache-warm` записом.
 - **IPv6:** не налаштований. IPv6 DHCPv6-клієнт LMT видалено 2026-07-15,
   оскільки modem не видавав адресу або delegated prefix.
 - **backups/routeros-current.rsc** — санітизований текстовий export RouterOS;
